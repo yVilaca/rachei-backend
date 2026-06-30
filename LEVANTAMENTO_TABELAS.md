@@ -1,170 +1,242 @@
 # Levantamento de Tabelas — Rachei Backend
 
-Mapeamento completo baseado em `src/types/index.ts`, `mock-data.ts` e stores do frontend.
-Indica o que já existe no modelo atual, o que está incompleto e o que está faltando.
+Análise baseada em `src/types/index.ts`, stores e páginas do frontend.
+Todos os nomes em português. Prefixos únicos por tabela em `db_column`.
 
 ---
 
-## Status geral dos modelos atuais
+## Tabelas necessárias (8)
 
-| Tabela              | Situação          |
-|---------------------|-------------------|
-| `users`             | ⚠️ Incompleto     |
-| `groups`            | ⚠️ Incompleto     |
-| `group_members`     | ⚠️ Incompleto     |
-| `debts`             | ⚠️ Incompleto     |
-| `installments`      | ⚠️ Incompleto     |
-| `payment_proofs`    | ❌ Não existe     |
-| `charge_links`      | ⚠️ Incompleto     |
-| `event_reads`       | ❌ Não existe     |
+| # | Tabela              | App Django  | Situação          |
+|---|---------------------|-------------|-------------------|
+| 1 | `usuarios`          | `users`     | ⚠️ Incompleto     |
+| 2 | `grupos`            | `groups`    | ⚠️ Incompleto     |
+| 3 | `membros_grupo`     | `groups`    | ⚠️ Incompleto     |
+| 4 | `despesas`          | `debts`     | ⚠️ Incompleto     |
+| 5 | `parcelas`          | `debts`     | ⚠️ Incompleto     |
+| 6 | `comprovantes`      | `payments`  | ❌ Não existe     |
+| 7 | `links_cobranca`    | `payments`  | ⚠️ Incompleto     |
+| 8 | `notificacoes_lidas`| `users`     | ❌ Não existe     |
 
----
-
-## 1. `users` — ⚠️ Incompleto
-
-Campos que existem no frontend (`User`) e estão **faltando** no model:
-
-| Campo frontend | Campo Django    | Tipo                  | Obs                              |
-|----------------|------------------|-----------------------|----------------------------------|
-| `phone`        | `phone`          | `CharField(20, blank)` | Opcional                        |
-| `avatarUrl`    | `avatar_url`     | `URLField(blank)`     | Foto de perfil                   |
-
-O `name` do frontend é `first_name + last_name` do AbstractUser — não precisa de campo extra.
+> **Preferências de notificação** (3 toggles do ProfilePage) são 3 campos booleanos direto
+> em `usuarios` — não justificam tabela separada para flags estáticas por usuário.
 
 ---
 
-## 2. `groups` — ⚠️ Incompleto
+## Prefixos por tabela
 
-Campo presente no frontend e **ausente** no model:
-
-| Campo frontend | Campo Django | Tipo                   | Obs                       |
-|----------------|--------------|------------------------|---------------------------|
-| `archived`     | `archived`   | `BooleanField(False)`  | Soft-delete de grupos     |
-
----
-
-## 3. `group_members` — ⚠️ Incompleto
-
-Campo presente no frontend e **ausente** no model:
-
-| Campo frontend | Campo Django | Tipo                          | Obs                             |
-|----------------|--------------|-------------------------------|---------------------------------|
-| `role`         | `role`       | `CharField(choices=admin/member)` | Controle de permissão no grupo |
+| Tabela               | Prefixo |
+|----------------------|---------|
+| `usuarios`           | `usr_`  |
+| `grupos`             | `grp_`  |
+| `membros_grupo`      | `mgp_`  |
+| `despesas`           | `dsp_`  |
+| `parcelas`           | `pcl_`  |
+| `comprovantes`       | `cpv_`  |
+| `links_cobranca`     | `lnk_`  |
+| `notificacoes_lidas` | `ntf_`  |
 
 ---
 
-## 4. `debts` — ⚠️ Incompleto
+## 1. `usuarios` — ⚠️ Incompleto
 
-Campo presente no frontend e **ausente** no model:
+Mapeado de: `User` (types/index.ts) + toggles do ProfilePage.
 
-| Campo frontend | Campo Django  | Tipo                | Obs                                               |
-|----------------|---------------|---------------------|---------------------------------------------------|
-| `createdBy`    | `created_by`  | `ForeignKey(User)`  | Quem registrou (pode diferir de `paid_by` no futuro) |
+**Campos faltantes:**
 
----
+| Campo Django              | Tipo                        | Obs                               |
+|---------------------------|-----------------------------|-----------------------------------|
+| `phone`                   | `CharField(20, blank=True)` | Opcional                          |
+| `avatar_url`              | `URLField(blank=True)`      | Foto de perfil                    |
+| `notif_cobracas`          | `BooleanField(default=True)`| Toggle "Cobranças recebidas"      |
+| `notif_confirmacoes`      | `BooleanField(default=True)`| Toggle "Confirmações de pagamento"|
+| `notif_lembretes`         | `BooleanField(default=True)`| Toggle "Lembretes semanais"       |
 
-## 5. `installments` — ⚠️ Incompleto
+`name` do frontend = `first_name + last_name` do AbstractUser — sem campo extra.
 
-O model atual tem `proof_url: URLField` inline, mas o frontend trata `PaymentProof` como **entidade própria**. Além disso, falta o campo de rastreio de quem enviou o comprovante.
-
-Campos a **remover** do model atual:
-- `proof_url` — vai para a tabela `payment_proofs`
-
----
-
-## 6. `payment_proofs` — ❌ Não existe
-
-Entidade separada no frontend (`PaymentProof`). Deve ser tabela própria para permitir múltiplas tentativas e auditoria.
-
-| Campo frontend   | Campo Django    | Tipo               | Obs                              |
-|------------------|-----------------|--------------------|----------------------------------|
-| `id`             | `id`            | `UUIDField(PK)`    |                                  |
-| `installmentId`  | `installment`   | `ForeignKey(Installment)` | Um por installment por vez (OneToOne por status) |
-| `fileUrl`        | `file_url`      | `URLField`         | URL do arquivo no storage        |
-| `uploadedAt`     | `uploaded_at`   | `DateTimeField(auto_now_add)` |                        |
-| *(ausente)*      | `uploaded_by`   | `ForeignKey(User)` | Quem enviou (rastreabilidade)    |
+**Meta:**
+```python
+class Meta:
+    db_table = 'usuarios'
+```
 
 ---
 
-## 7. `charge_links` — ⚠️ Incompleto
+## 2. `grupos` — ⚠️ Incompleto
 
-Campo presente no frontend e **ausente** no model:
+Mapeado de: `Group` (types/index.ts).
 
-| Campo frontend | Campo Django | Tipo                    | Obs                                     |
-|----------------|--------------|-------------------------|-----------------------------------------|
-| `usedAt`       | `used_at`    | `DateTimeField(null)`   | Registra quando o link foi acessado     |
+**Campos faltantes:**
 
----
+| Campo Django | Tipo                    | Obs                   |
+|--------------|-------------------------|-----------------------|
+| `archived`   | `BooleanField(False)`   | Soft-delete de grupos |
 
-## 8. `event_reads` — ❌ Não existe
-
-No frontend, `readEventIds: Set<string>` é persistido em localStorage.
-No backend, esse estado precisa ser persistido por usuário para sincronizar entre dispositivos.
-
-Os IDs de evento são derivados (não existem como registros), seguindo o padrão:
-- `ev-created-{debtId}`
-- `ev-added-{debtId}`
-- `ev-proof-{installmentId}`
-- `ev-paid-{installmentId}`
-- `ev-mypaid-{installmentId}`
-- `ev-pending-{installmentId}`
-- `ev-charged-{installmentId}`
-
-| Campo      | Tipo                | Obs                                          |
-|------------|---------------------|----------------------------------------------|
-| `id`       | `BigAutoField`      | PK simples (não precisa de UUID)             |
-| `user`     | `ForeignKey(User)`  | Quem leu                                     |
-| `event_id` | `CharField(60)`     | String derivada, ex: `ev-proof-inst-abc123`  |
-| `read_at`  | `DateTimeField(auto_now_add)` |                                    |
-
-Índice único em `(user, event_id)`.
+**Meta:**
+```python
+class Meta:
+    db_table = 'grupos'
+```
 
 ---
 
-## Prefixos por tabela (conforme RULES.md)
+## 3. `membros_grupo` — ⚠️ Incompleto
 
-| Tabela             | Prefixo |
-|--------------------|---------|
-| `users`            | `usr_`  |
-| `groups`           | `grp_`  |
-| `group_members`    | `grm_`  |
-| `debts`            | `dbt_`  |
-| `installments`     | `ins_`  |
-| `payment_proofs`   | `prf_`  |
-| `charge_links`     | `chl_`  |
-| `event_reads`      | `evr_`  |
+Mapeado de: `GroupMember` (types/index.ts).
+
+**Campos faltantes:**
+
+| Campo Django | Tipo                              | Obs                          |
+|--------------|-----------------------------------|------------------------------|
+| `role`       | `CharField(choices=ROLE_CHOICES)` | `admin` ou `member`          |
+
+**Meta:**
+```python
+class Meta:
+    db_table = 'membros_grupo'
+    unique_together = ('group', 'user')
+```
+
+---
+
+## 4. `despesas` — ⚠️ Incompleto
+
+Mapeado de: `Debt` (types/index.ts).
+
+**Campos faltantes:**
+
+| Campo Django | Tipo               | Obs                                              |
+|--------------|--------------------|--------------------------------------------------|
+| `created_by` | `ForeignKey(User)` | Quem registrou (pode diferir de `paid_by`)       |
+
+**Meta:**
+```python
+class Meta:
+    db_table = 'despesas'
+    ordering = ['-created_at']
+```
+
+---
+
+## 5. `parcelas` — ⚠️ Incompleto
+
+Mapeado de: `Installment` (types/index.ts).
+
+**Ação necessária:**
+
+| Ação   | Campo      | Motivo                                                      |
+|--------|------------|-------------------------------------------------------------|
+| Remover | `proof_url` | O frontend trata `PaymentProof` como entidade separada → tabela `comprovantes` |
+
+**Meta:**
+```python
+class Meta:
+    db_table = 'parcelas'
+```
+
+---
+
+## 6. `comprovantes` — ❌ Não existe
+
+Mapeado de: `PaymentProof` (types/index.ts).
+Tabela separada permite múltiplas tentativas e auditoria de quem enviou.
+
+| Campo Django   | Tipo                        | Obs                           |
+|----------------|-----------------------------|-------------------------------|
+| `id`           | `UUIDField(PK)`             |                               |
+| `parcela`      | `ForeignKey(Installment)`   | Relacionamento com a parcela  |
+| `file_url`     | `URLField`                  | URL do arquivo no storage     |
+| `uploaded_at`  | `DateTimeField(auto_now_add)`|                              |
+| `uploaded_by`  | `ForeignKey(User)`          | Rastreabilidade               |
+
+**Meta:**
+```python
+class Meta:
+    db_table = 'comprovantes'
+```
+
+---
+
+## 7. `links_cobranca` — ⚠️ Incompleto
+
+Mapeado de: `ChargeLink` (types/index.ts).
+
+**Campos faltantes:**
+
+| Campo Django | Tipo                  | Obs                                  |
+|--------------|-----------------------|--------------------------------------|
+| `used_at`    | `DateTimeField(null)` | Quando o link foi acessado           |
+
+**Meta:**
+```python
+class Meta:
+    db_table = 'links_cobranca'
+```
+
+---
+
+## 8. `notificacoes_lidas` — ❌ Não existe
+
+`readEventIds: Set<string>` está em localStorage no frontend.
+No backend, persiste por usuário para sincronizar entre dispositivos.
+
+Os IDs de evento são strings derivadas (não há tabela de eventos), seguindo o padrão:
+- `ev-created-{despesaId}`
+- `ev-added-{despesaId}`
+- `ev-proof-{parcelaId}`
+- `ev-paid-{parcelaId}`
+- `ev-mypaid-{parcelaId}`
+- `ev-pending-{parcelaId}`
+- `ev-charged-{parcelaId}`
+
+| Campo Django | Tipo                          | Obs                                     |
+|--------------|-------------------------------|-----------------------------------------|
+| `id`         | `BigAutoField`                | PK simples — UUID desnecessário aqui    |
+| `usuario`    | `ForeignKey(User)`            | Quem leu                                |
+| `evento_id`  | `CharField(60)`               | String derivada, ex: `ev-proof-abc123`  |
+| `lida_em`    | `DateTimeField(auto_now_add)` |                                         |
+
+Índice único em `(usuario, evento_id)`.
+
+**Meta:**
+```python
+class Meta:
+    db_table = 'notificacoes_lidas'
+    unique_together = ('usuario', 'evento_id')
+```
 
 ---
 
 ## Diagrama de relacionamentos
 
 ```
-users ────────────────────────────────────────────────────┐
-  │                                                        │
-  │ created_by / paid_by                                   │
-  ▼                                                        │
-debts ──────── group_members ──── groups                   │
-  │                    │                                   │
-  ▼                    └── user ──────────────────────────-┘
-installments
+usuarios ────────────────────────────────────────────────────────┐
+  │                                                              │
+  │ paid_by / created_by                                         │
+  ▼                                                              │
+despesas ──── membros_grupo ──── grupos                          │
+  │                │                                            │
+  ▼                └── usuario ──────────────────────────────────┘
+parcelas
   │    │
-  │    └──── payment_proofs (OneToOne por comprovante ativo)
+  │    └──── comprovantes (uploaded_by → usuarios)
   │
-  └──────── charge_links (OneToOne)
+  └──────── links_cobranca (OneToOne)
 
-users ──── event_reads (leituras de notificação)
+usuarios ──── notificacoes_lidas
 ```
 
 ---
 
-## Resumo das ações necessárias
+## Resumo das ações
 
-1. **Atualizar `users`** — adicionar `phone`, `avatar_url`
-2. **Atualizar `groups`** — adicionar `archived`
-3. **Atualizar `group_members`** — adicionar `role`
-4. **Atualizar `debts`** — adicionar `created_by`
-5. **Atualizar `installments`** — remover `proof_url` inline
-6. **Criar `payment_proofs`** — tabela nova com `uploaded_by`
-7. **Atualizar `charge_links`** — adicionar `used_at`
-8. **Criar `event_reads`** — tabela nova com índice `(user, event_id)`
-9. **Aplicar `db_column` com prefixos** em todos os campos de todas as tabelas
+| # | Ação                   | Tabela               | Detalhe                                    |
+|---|------------------------|----------------------|--------------------------------------------|
+| 1 | Renomear + atualizar   | `usuarios`           | `db_table`, prefixos, + 5 campos novos     |
+| 2 | Renomear + atualizar   | `grupos`             | `db_table`, prefixos, + `archived`         |
+| 3 | Renomear + atualizar   | `membros_grupo`      | `db_table`, prefixos, + `role`             |
+| 4 | Renomear + atualizar   | `despesas`           | `db_table`, prefixos, + `created_by`       |
+| 5 | Renomear + atualizar   | `parcelas`           | `db_table`, prefixos, remover `proof_url`  |
+| 6 | Criar                  | `comprovantes`       | Tabela nova com 5 campos                   |
+| 7 | Renomear + atualizar   | `links_cobranca`     | `db_table`, prefixos, + `used_at`          |
+| 8 | Criar                  | `notificacoes_lidas` | Tabela nova com índice único               |

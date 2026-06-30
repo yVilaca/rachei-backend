@@ -6,24 +6,26 @@ Cada tabela usa um prefixo de 3 letras em todos os seus campos via `db_column`.
 O nome Python segue o padrão Django (sem prefixo), mas a coluna no banco é prefixada.
 Isso evita ambiguidade em JOINs e facilita debugging direto no SQL.
 
-| App / Tabela      | Prefixo |
-|-------------------|---------|
-| `users`           | `usr_`  |
-| `groups`          | `grp_`  |
-| `group_members`   | `grm_`  |
-| `debts`           | `dbt_`  |
-| `installments`    | `ins_`  |
-| `charge_links`    | `chl_`  |
+| Tabela               | Prefixo |
+|----------------------|---------|
+| `usuarios`           | `usr_`  |
+| `grupos`             | `grp_`  |
+| `membros_grupo`      | `mgp_`  |
+| `despesas`           | `dsp_`  |
+| `parcelas`           | `pcl_`  |
+| `comprovantes`       | `cpv_`  |
+| `links_cobranca`     | `lnk_`  |
+| `notificacoes_lidas` | `ntf_`  |
 
 **Exemplo:**
 
 ```python
-class Debt(models.Model):
-    id              = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, db_column='dbt_id')
-    description     = models.CharField(max_length=255, db_column='dbt_description')
-    total_amount_cents = models.PositiveIntegerField(db_column='dbt_total_amount_cents')
-    split_type      = models.CharField(..., db_column='dbt_split_type')
-    created_at      = models.DateTimeField(auto_now_add=True, db_column='dbt_created_at')
+class Despesa(models.Model):
+    id              = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, db_column='dsp_id')
+    description     = models.CharField(max_length=255, db_column='dsp_descricao')
+    total_amount_cents = models.PositiveIntegerField(db_column='dsp_total_centavos')
+    split_type      = models.CharField(..., db_column='dsp_tipo_divisao')
+    created_at      = models.DateTimeField(auto_now_add=True, db_column='dsp_criado_em')
 ```
 
 ---
@@ -41,27 +43,27 @@ Nunca usar `fields = '__all__'`. Nunca reutilizar o mesmo serializer para list, 
 **Exemplo:**
 
 ```python
-class DebtListSerializer(serializers.ModelSerializer):
-    """Usado em GET /api/groups/:id/debts/ — dados mínimos para o card."""
+class DespesaListSerializer(serializers.ModelSerializer):
+    """Usado em GET /api/grupos/:id/despesas/ — dados mínimos para o card."""
     class Meta:
-        model = Debt
+        model = Despesa
         fields = ('id', 'description', 'total_amount_cents', 'split_type', 'created_at')
 
 
-class DebtDetailSerializer(serializers.ModelSerializer):
-    """Usado em GET /api/debts/:id/ — inclui installments aninhadas."""
-    installments = InstallmentListSerializer(many=True, read_only=True)
+class DespesaDetailSerializer(serializers.ModelSerializer):
+    """Usado em GET /api/despesas/:id/ — inclui parcelas aninhadas."""
+    parcelas = ParcelaListSerializer(many=True, read_only=True)
 
     class Meta:
-        model = Debt
-        fields = ('id', 'description', 'total_amount_cents', 'split_type', 'created_at', 'paid_by', 'installments')
+        model = Despesa
+        fields = ('id', 'description', 'total_amount_cents', 'split_type', 'created_at', 'paid_by', 'parcelas')
 
 
-class DebtFormSerializer(serializers.ModelSerializer):
-    """Usado em POST /api/debts/ — valida entrada, nunca expõe campos internos."""
+class DespesaFormSerializer(serializers.ModelSerializer):
+    """Usado em POST /api/despesas/ — valida entrada, nunca expõe campos internos."""
     class Meta:
-        model = Debt
-        fields = ('group', 'description', 'total_amount_cents', 'split_type')
+        model = Despesa
+        fields = ('grupo', 'description', 'total_amount_cents', 'split_type')
 ```
 
 ---
