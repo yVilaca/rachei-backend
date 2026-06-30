@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -19,3 +20,21 @@ class User(AbstractUser):
 
     class Meta:
         db_table = 'usuarios'
+
+
+class NotificacaoLida(models.Model):
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='notificacoes_lidas',
+        db_column='ntf_usuario_id',
+    )
+    evento_id = models.CharField(max_length=60, db_column='ntf_evento_id')
+    lida_em = models.DateTimeField(auto_now_add=True, db_column='ntf_lida_em')
+
+    class Meta:
+        db_table = 'notificacoes_lidas'
+        unique_together = ('usuario', 'evento_id')
+
+    def __str__(self):
+        return f'{self.usuario_id} leu {self.evento_id}'
