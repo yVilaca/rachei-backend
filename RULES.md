@@ -1,5 +1,8 @@
 # Regras e Boas Práticas — Rachei Backend
 
+> **Referência humana.** Este arquivo existe para leitura e onboarding da equipe.
+> Claude Code carrega as regras automaticamente via `CLAUDE.md` e `.claude/rules/`.
+
 ---
 
 ## 1. Models
