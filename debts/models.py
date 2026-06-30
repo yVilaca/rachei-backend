@@ -8,22 +8,36 @@ class Debt(models.Model):
     SPLIT_CUSTOM = 'custom'
     SPLIT_CHOICES = [(SPLIT_EQUAL, 'Equal'), (SPLIT_CUSTOM, 'Custom')]
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    group = models.ForeignKey(
-        'groups.Group', on_delete=models.CASCADE, related_name='debts'
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False,
+        db_column='dsp_id',
     )
-    description = models.CharField(max_length=255)
-    total_amount_cents = models.PositiveIntegerField()
+    group = models.ForeignKey(
+        'groups.Group', on_delete=models.CASCADE, related_name='debts',
+        db_column='dsp_grupo_id',
+    )
+    description = models.CharField(max_length=255, db_column='dsp_descricao')
+    total_amount_cents = models.PositiveIntegerField(db_column='dsp_total_centavos')
     paid_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='debts_paid',
+        db_column='dsp_pago_por_id',
     )
-    split_type = models.CharField(max_length=10, choices=SPLIT_CHOICES, default=SPLIT_EQUAL)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='debts_created',
+        db_column='dsp_criado_por_id',
+    )
+    split_type = models.CharField(
+        max_length=10, choices=SPLIT_CHOICES, default=SPLIT_EQUAL,
+        db_column='dsp_tipo_divisao',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_column='dsp_criado_em')
 
     class Meta:
-        db_table = 'debts'
+        db_table = 'despesas'
         ordering = ['-created_at']
 
     def __str__(self):
@@ -35,26 +49,35 @@ class Installment(models.Model):
     STATUS_AWAITING = 'awaiting_confirmation'
     STATUS_PAID = 'paid'
     STATUS_CHOICES = [
-        (STATUS_PENDING, 'Pending'),
-        (STATUS_AWAITING, 'Awaiting confirmation'),
-        (STATUS_PAID, 'Paid'),
+        (STATUS_PENDING, 'Pendente'),
+        (STATUS_AWAITING, 'Aguardando confirmação'),
+        (STATUS_PAID, 'Pago'),
     ]
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    debt = models.ForeignKey(Debt, on_delete=models.CASCADE, related_name='installments')
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False,
+        db_column='pcl_id',
+    )
+    debt = models.ForeignKey(
+        Debt, on_delete=models.CASCADE, related_name='installments',
+        db_column='pcl_despesa_id',
+    )
     debtor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='installments_owed',
+        db_column='pcl_devedor_id',
     )
-    amount_cents = models.PositiveIntegerField()
-    status = models.CharField(max_length=25, choices=STATUS_CHOICES, default=STATUS_PENDING)
-    proof_url = models.URLField(blank=True)
-    paid_at = models.DateTimeField(null=True, blank=True)
-    confirmed_at = models.DateTimeField(null=True, blank=True)
+    amount_cents = models.PositiveIntegerField(db_column='pcl_valor_centavos')
+    status = models.CharField(
+        max_length=25, choices=STATUS_CHOICES, default=STATUS_PENDING,
+        db_column='pcl_status',
+    )
+    paid_at = models.DateTimeField(null=True, blank=True, db_column='pcl_pago_em')
+    confirmed_at = models.DateTimeField(null=True, blank=True, db_column='pcl_confirmado_em')
 
     class Meta:
-        db_table = 'installments'
+        db_table = 'parcelas'
 
     def __str__(self):
-        return f'{self.debtor} owes {self.amount_cents}¢ on {self.debt}'
+        return f'{self.debtor} deve {self.amount_cents}¢ em {self.debt}'
