@@ -16,7 +16,7 @@ class Group(models.Model):
         related_name='owned_groups',
         db_column='grp_criado_por_id',
     )
-    archived = models.BooleanField(default=False, db_column='grp_arquivado')
+    archived = models.BooleanField(default=False, db_column='grp_arquivado', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_column='grp_criado_em')
 
     class Meta:

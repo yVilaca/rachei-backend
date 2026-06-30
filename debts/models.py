@@ -71,7 +71,7 @@ class Installment(models.Model):
     amount_cents = models.PositiveIntegerField(db_column='pcl_valor_centavos')
     status = models.CharField(
         max_length=25, choices=STATUS_CHOICES, default=STATUS_PENDING,
-        db_column='pcl_status',
+        db_column='pcl_status', db_index=True,
     )
     paid_at = models.DateTimeField(null=True, blank=True, db_column='pcl_pago_em')
     confirmed_at = models.DateTimeField(null=True, blank=True, db_column='pcl_confirmado_em')
