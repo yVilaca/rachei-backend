@@ -4,9 +4,6 @@ from django.db import models
 
 
 class Group(models.Model):
-    ROLE_ADMIN = 'admin'
-    ROLE_MEMBER = 'member'
-
     id = models.UUIDField(
         primary_key=True, default=uuid.uuid4, editable=False,
         db_column='grp_id',
@@ -34,6 +31,7 @@ class GroupMember(models.Model):
     ROLE_MEMBER = 'member'
     ROLE_CHOICES = [(ROLE_ADMIN, 'Admin'), (ROLE_MEMBER, 'Membro')]
 
+    id = models.BigAutoField(primary_key=True, db_column='mgp_id')
     group = models.ForeignKey(
         Group, on_delete=models.CASCADE, related_name='members',
         db_column='mgp_grupo_id',

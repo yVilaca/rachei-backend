@@ -23,6 +23,7 @@ class User(AbstractUser):
 
 
 class NotificacaoLida(models.Model):
+    id = models.BigAutoField(primary_key=True, db_column='ntf_id')
     usuario = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
