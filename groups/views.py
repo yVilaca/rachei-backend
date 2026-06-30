@@ -15,10 +15,11 @@ from .serializers import (
 
 def _get_grupo(grupo_id, user, require_admin=False):
     """Retorna o grupo se o user for membro (e opcionalmente admin)."""
-    qs = Group.objects.filter(pk=grupo_id, members__user=user)
     if require_admin:
-        qs = qs.filter(members__role=GroupMember.ROLE_ADMIN)
-    grupo = qs.first()
+        filter_kwargs = {'members__user': user, 'members__role': GroupMember.ROLE_ADMIN}
+    else:
+        filter_kwargs = {'members__user': user}
+    grupo = Group.objects.filter(pk=grupo_id, **filter_kwargs).first()
     if not grupo:
         raise NotFound('Grupo não encontrado.')
     return grupo
@@ -37,7 +38,7 @@ class GrupoListCreateView(generics.ListCreateAPIView):
         return (
             Group.objects
             .filter(members__user=self.request.user)
-            .annotate(member_count=Count('members'))
+            .annotate(member_count=Count('members', distinct=True))
             .order_by('archived', '-created_at')
         )
 
@@ -60,18 +61,21 @@ class GrupoDetailView(generics.RetrieveUpdateAPIView):
         return GrupoFormSerializer if self.request.method == 'PATCH' else GrupoDetailSerializer
 
     def get_object(self):
-        require_admin = self.request.method == 'PATCH'
-        grupo = _get_grupo(self.kwargs['pk'], self.request.user, require_admin=require_admin)
-
-        if self.request.method == 'GET':
-            grupo = (
-                Group.objects
-                .prefetch_related(
-                    Prefetch('members', queryset=GroupMember.objects.select_related('user'))
-                )
-                .select_related('created_by')
-                .get(pk=grupo.pk)
+        if self.request.method == 'PATCH':
+            member_filter = {'members__user': self.request.user, 'members__role': GroupMember.ROLE_ADMIN}
+        else:
+            member_filter = {'members__user': self.request.user}
+        grupo = (
+            Group.objects
+            .filter(pk=self.kwargs['pk'], **member_filter)
+            .select_related('created_by')
+            .prefetch_related(
+                Prefetch('members', queryset=GroupMember.objects.select_related('user'))
             )
+            .first()
+        )
+        if not grupo:
+            raise NotFound('Grupo não encontrado.')
         return grupo
 
 
@@ -84,22 +88,29 @@ class MembroListCreateView(generics.ListCreateAPIView):
     def get_serializer_class(self):
         return MembroFormSerializer if self.request.method == 'POST' else MembroListSerializer
 
+    def _grupo_cached(self):
+        if not hasattr(self, '_grupo'):
+            self._grupo = _get_grupo(self.kwargs['grupo_pk'], self.request.user)
+        return self._grupo
+
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        ctx['group'] = _get_grupo(self.kwargs['grupo_pk'], self.request.user)
+        ctx['group'] = self._grupo_cached()
         return ctx
 
     def get_queryset(self):
-        _get_grupo(self.kwargs['grupo_pk'], self.request.user)
+        grupo = self._grupo_cached()
         return (
             GroupMember.objects
-            .filter(group_id=self.kwargs['grupo_pk'])
+            .filter(group=grupo)
             .select_related('user')
             .order_by('joined_at')
         )
 
     def perform_create(self, serializer):
-        grupo = _get_grupo(self.kwargs['grupo_pk'], self.request.user, require_admin=True)
+        grupo = self._grupo_cached()
+        if not GroupMember.objects.filter(group=grupo, user=self.request.user, role=GroupMember.ROLE_ADMIN).exists():
+            raise PermissionDenied('Somente administradores podem adicionar membros.')
         serializer.save(group=grupo)
 
 

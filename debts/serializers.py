@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from users.serializers import UserListSerializer
@@ -39,7 +40,7 @@ class ParcelaDetailSerializer(serializers.ModelSerializer):
     def get_charge_link_token(self, obj):
         try:
             return str(obj.charge_link.token)
-        except Exception:
+        except ObjectDoesNotExist:
             return None
 
 

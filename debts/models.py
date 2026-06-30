@@ -78,6 +78,13 @@ class Installment(models.Model):
 
     class Meta:
         db_table = 'parcelas'
+        indexes = [
+            models.Index(
+                fields=['status'],
+                name='pcl_status_ativo_idx',
+                condition=models.Q(status__in=['pending', 'awaiting_confirmation']),
+            ),
+        ]
 
     def __str__(self):
         return f'{self.debtor} deve {self.amount_cents}¢ em {self.debt}'

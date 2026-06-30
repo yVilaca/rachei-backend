@@ -6,6 +6,8 @@ from rest_framework.views import APIView
 
 from groups.models import Group, GroupMember
 from .models import Debt, Installment
+
+_grupos_do_user = lambda user: GroupMember.objects.filter(user=user).values('group_id')
 from .serializers import (
     DespesaDetailSerializer,
     DespesaFormSerializer,
@@ -43,8 +45,6 @@ class DespesaCreateView(APIView):
         data = serializer.validated_data
 
         grupo = get_object_or_404(Group, pk=data['grupo_id'])
-        if not GroupMember.objects.filter(group=grupo, user=request.user).exists():
-            raise PermissionDenied('Você não é membro deste grupo.')
 
         try:
             despesa = criar_despesa(
@@ -56,6 +56,8 @@ class DespesaCreateView(APIView):
                 split_type=data['split_type'],
                 parcelas_data=data['parcelas'],
             )
+        except PermissionError as e:
+            raise PermissionDenied(str(e))
         except ValueError as e:
             raise ValidationError(str(e))
 
@@ -75,14 +77,13 @@ class DespesaDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         return (
             Debt.objects
-            .filter(group__members__user=self.request.user)
+            .filter(group_id__in=_grupos_do_user(self.request.user))
             .select_related('paid_by', 'created_by')
             .prefetch_related(
                 'installments__debtor',
                 'installments__comprovantes',
                 'installments__charge_link',
             )
-            .distinct()
         )
 
 
@@ -93,8 +94,7 @@ class ParcelaDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         return (
             Installment.objects
-            .filter(debt__group__members__user=self.request.user)
+            .filter(debt__group_id__in=_grupos_do_user(self.request.user))
             .select_related('debtor', 'debt__paid_by', 'charge_link')
             .prefetch_related('comprovantes')
-            .distinct()
         )

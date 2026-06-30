@@ -5,7 +5,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from debts.models import Installment
+from debts.models import Debt, Installment
 from users.models import NotificacaoLida
 from .models import ChargeLink, Comprovante
 from .serializers import (
@@ -111,10 +111,6 @@ class AtividadeListView(APIView):
         eventos = []
 
         # ── Despesas criadas pelo usuário ─────────────────────────────────────
-        despesas_criadas = (
-            Installment.objects.none()  # marcador — despesas são buscadas separado
-        )
-        from debts.models import Debt
         for d in Debt.objects.filter(created_by=user).only('id', 'created_at'):
             eventos.append({
                 'id': f'ev-created-{d.id}',
@@ -164,7 +160,7 @@ class AtividadeListView(APIView):
                     'parcela_id': str(p.id),
                     'data': p.charge_link.created_at,
                 })
-            except Exception:
+            except ChargeLink.DoesNotExist:
                 pass
 
         # ── Parcelas onde o usuário é credor ─────────────────────────────────

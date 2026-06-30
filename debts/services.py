@@ -16,12 +16,15 @@ def criar_despesa(*, grupo, paid_by, created_by, description, total_amount_cents
 
     Raises ValueError se algum devedor não for membro do grupo.
     """
-    debtor_ids = {p['debtor'].pk for p in parcelas_data}
     member_ids = set(
         GroupMember.objects
         .filter(group=grupo)
         .values_list('user_id', flat=True)
     )
+    if paid_by.pk not in member_ids:
+        raise PermissionError('Você não é membro deste grupo.')
+
+    debtor_ids = {p['debtor'].pk for p in parcelas_data}
     invalidos = debtor_ids - member_ids
     if invalidos:
         raise ValueError('Um ou mais devedores não são membros do grupo.')
