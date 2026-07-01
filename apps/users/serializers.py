@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
 
@@ -39,6 +40,21 @@ class UserFormSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('phone', 'avatar_url', 'notif_cobracas', 'notif_confirmacoes', 'notif_lembretes')
+
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Login: adiciona claim 'plan' no JWT e retorna dados do usuário na resposta."""
+
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['plan'] = user.plan
+        return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        data['user'] = UserDetailSerializer(self.user).data
+        return data
 
 
 class RegisterSerializer(serializers.Serializer):
