@@ -51,7 +51,10 @@ class LogoutView(APIView):
         if not refresh_token:
             raise ValidationError({'refresh': 'Campo obrigatório.'})
         try:
-            RefreshToken(refresh_token).blacklist()
+            token = RefreshToken(refresh_token)
+            if token.payload.get('user_id') != request.user.id:
+                raise ValidationError({'refresh': 'Token não pertence ao usuário autenticado.'})
+            token.blacklist()
         except TokenError:
             raise ValidationError({'refresh': 'Token inválido ou já expirado.'})
         return Response(status=status.HTTP_205_RESET_CONTENT)
