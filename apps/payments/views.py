@@ -5,8 +5,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from debts.models import Debt, Installment
-from users.models import NotificacaoLida
+from apps.debts.models import Debt, Installment
+from apps.users.models import NotificacaoLida
 from .models import ChargeLink, Comprovante
 from .serializers import (
     ComprovanteDetailSerializer,

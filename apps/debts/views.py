@@ -4,7 +4,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from groups.models import Group, GroupMember
+from apps.groups.models import Group, GroupMember
 from .models import Debt, Installment
 
 _grupos_do_user = lambda user: GroupMember.objects.filter(user=user).values('group_id')

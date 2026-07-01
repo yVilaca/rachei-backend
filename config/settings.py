@@ -23,10 +23,10 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     # Local
-    'users',
-    'groups',
-    'debts',
-    'payments',
+    'apps.users',
+    'apps.groups',
+    'apps.debts',
+    'apps.payments',
 ]
 
 MIDDLEWARE = [

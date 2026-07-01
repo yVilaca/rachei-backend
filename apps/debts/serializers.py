@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
-from users.serializers import UserListSerializer
+from apps.users.serializers import UserListSerializer
 from .models import Debt, Installment
 
 User = get_user_model()

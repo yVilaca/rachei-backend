@@ -1,6 +1,6 @@
 from django.db import transaction
 
-from groups.models import GroupMember
+from apps.groups.models import GroupMember
 from .models import Debt, Installment
 
 

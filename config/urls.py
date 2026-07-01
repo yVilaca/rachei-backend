@@ -7,9 +7,9 @@ urlpatterns = [
     # Auth
     path('api/auth/login/', TokenObtainPairView.as_view(), name='token_login'),
     path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('api/auth/', include('users.urls')),
+    path('api/auth/', include('apps.users.urls')),
     # Apps
-    path('api/', include('groups.urls')),
-    path('api/', include('debts.urls')),
-    path('api/', include('payments.urls')),
+    path('api/', include('apps.groups.urls')),
+    path('api/', include('apps.debts.urls')),
+    path('api/', include('apps.payments.urls')),
 ]

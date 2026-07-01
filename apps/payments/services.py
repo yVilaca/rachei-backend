@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
-from debts.models import Installment
+from apps.debts.models import Installment
 from .models import ChargeLink, Comprovante
 
 

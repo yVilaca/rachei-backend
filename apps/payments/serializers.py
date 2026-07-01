@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from users.serializers import UserListSerializer
+from apps.users.serializers import UserListSerializer
 from .models import ChargeLink, Comprovante
 
 

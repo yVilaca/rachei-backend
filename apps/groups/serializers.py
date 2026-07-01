@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from users.serializers import UserListSerializer
+from apps.users.serializers import UserListSerializer
 from .models import Group, GroupMember
 
 User = get_user_model()
