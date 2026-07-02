@@ -4,9 +4,14 @@ from django.db import models
 
 
 class User(AbstractUser):
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['username']
+
     PLAN_FREE = 'free'
     PLAN_PRO = 'pro'
     PLAN_CHOICES = [(PLAN_FREE, 'Free'), (PLAN_PRO, 'Pro')]
+
+    email = models.EmailField(unique=True)
 
     plan = models.CharField(
         max_length=10, choices=PLAN_CHOICES, default=PLAN_FREE,
