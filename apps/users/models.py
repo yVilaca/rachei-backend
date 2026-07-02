@@ -1,6 +1,11 @@
+import hashlib
+import secrets
+from datetime import timedelta
+
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 
 
 class User(AbstractUser):
@@ -44,3 +49,49 @@ class NotificacaoLida(models.Model):
 
     def __str__(self):
         return f'{self.usuario_id} leu {self.evento_id}'
+
+
+class PasswordResetCode(models.Model):
+    MAX_ATTEMPTS = 5
+    CODE_TTL_MINUTES = 20
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='reset_codes',
+        db_column='prc_usuario_id',
+    )
+    code_hash = models.CharField(max_length=64, db_column='prc_code_hash')
+    expires_at = models.DateTimeField(db_column='prc_expires_at')
+    used = models.BooleanField(default=False, db_column='prc_usado')
+    attempts = models.PositiveSmallIntegerField(default=0, db_column='prc_tentativas')
+    created_at = models.DateTimeField(auto_now_add=True, db_column='prc_criado_em')
+
+    class Meta:
+        db_table = 'codigos_recuperacao'
+        indexes = [models.Index(fields=['user', 'used', 'expires_at'])]
+
+    @classmethod
+    def generate(cls, user) -> str:
+        """Invalida códigos anteriores e cria um novo. Retorna o código em texto."""
+        cls.objects.filter(user=user).delete()
+        code = f'{secrets.randbelow(1_000_000):06d}'
+        cls.objects.create(
+            user=user,
+            code_hash=hashlib.sha256(code.encode()).hexdigest(),
+            expires_at=timezone.now() + timedelta(minutes=cls.CODE_TTL_MINUTES),
+        )
+        return code
+
+    def is_valid(self) -> bool:
+        return not self.used and self.attempts < self.MAX_ATTEMPTS and self.expires_at > timezone.now()
+
+    def verify_and_consume(self, code: str) -> bool:
+        """Consome o código se correto; incrementa tentativas atomicamente caso contrário."""
+        submitted = hashlib.sha256(code.encode()).hexdigest()
+        if secrets.compare_digest(self.code_hash, submitted):
+            self.used = True
+            self.save(update_fields=['used'])
+            return True
+        PasswordResetCode.objects.filter(pk=self.pk).update(attempts=models.F('attempts') + 1)
+        return False
