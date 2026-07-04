@@ -640,6 +640,67 @@ class KeyRotationMigrationTest(TestCase):
             f'Plaintext diverge após rotação! Esperado: {plaintext_secret!r}, obtido: {decrypted!r}'
         )
 
+    def test_rotate_key_reverse_re_encrypts_with_old_key(self):
+        """
+        Grava secret criptografado com NEW_KEY no banco via SQL, chama
+        rotate_key_reverse diretamente e confirma que o resultado descriptografa
+        com a chave antiga.
+        """
+        import importlib
+        import os
+        from unittest.mock import MagicMock, patch
+        from cryptography.fernet import Fernet
+        from django.db import connection
+
+        migration_mod = importlib.import_module(
+            'apps.users.migrations.0009_rotate_totp_encryption_key'
+        )
+
+        OLD_KEY = 'YNqvfjrYdzvwqJQQiHQCV_-2eeWNfya4UAHsxiNdNwU='
+        NEW_KEY = Fernet.generate_key().decode()
+
+        plaintext_secret = pyotp.random_base32()
+        new_fernet = Fernet(NEW_KEY.encode())
+        encrypted_with_new = new_fernet.encrypt(plaintext_secret.encode()).decode()
+
+        user = _make_user('keyrotation_reverse@test.com')
+        config = TwoFactorConfig.objects.create(
+            user=user, secret=pyotp.random_base32(), is_active=True, backup_codes=[],
+        )
+
+        # Sobrescreve o secret com o valor criptografado pela NEW_KEY
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'UPDATE configs_2fa SET tfa_secret = %s WHERE tfa_id = %s',
+                [encrypted_with_new, config.pk],
+            )
+
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT tfa_secret FROM configs_2fa WHERE tfa_id = %s', [config.pk])
+            raw_before = cursor.fetchone()[0]
+        self.assertEqual(raw_before, encrypted_with_new, 'Setup: valor não foi gravado via SQL')
+
+        mock_editor = MagicMock()
+        mock_editor.connection = connection
+
+        with patch.dict(os.environ, {'TOTP_OLD_ENCRYPTION_KEY': OLD_KEY}):
+            with self.settings(TOTP_ENCRYPTION_KEY=NEW_KEY):
+                migration_mod.rotate_key_reverse(None, mock_editor)
+
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT tfa_secret FROM configs_2fa WHERE tfa_id = %s', [config.pk])
+            raw_after = cursor.fetchone()[0]
+
+        self.assertNotEqual(raw_after, encrypted_with_new, 'Valor não foi rotacionado de volta no banco')
+
+        # Descriptografa com a OLD_KEY e confirma equivalência com o plaintext original
+        old_fernet = Fernet(OLD_KEY.encode())
+        decrypted = old_fernet.decrypt(raw_after.encode()).decode()
+        self.assertEqual(
+            decrypted, plaintext_secret,
+            f'Plaintext diverge após reverse! Esperado: {plaintext_secret!r}, obtido: {decrypted!r}'
+        )
+
 
 # ---------------------------------------------------------------------------
 # 13. Blacklist de tokens ao ATIVAR 2FA
