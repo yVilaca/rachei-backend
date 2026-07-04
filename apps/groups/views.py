@@ -4,6 +4,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.response import Response
 
 from .models import Group, GroupMember
+from .permissions import IsGroupAdmin
 from .serializers import (
     GrupoDetailSerializer,
     GrupoFormSerializer,
@@ -85,6 +86,12 @@ class MembroListCreateView(generics.ListCreateAPIView):
     POST /api/grupos/{grupo_pk}/membros/ — adiciona membro (somente admins)
     """
 
+    def get_permissions(self):
+        # POST exige admin; GET basta ser membro (filtrado pelo queryset)
+        if self.request.method == 'POST':
+            return [IsGroupAdmin()]
+        return super().get_permissions()
+
     def get_serializer_class(self):
         return MembroFormSerializer if self.request.method == 'POST' else MembroListSerializer
 
@@ -109,8 +116,9 @@ class MembroListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         grupo = self._grupo_cached()
-        if not GroupMember.objects.filter(group=grupo, user=self.request.user, role=GroupMember.ROLE_ADMIN).exists():
-            raise PermissionDenied('Somente administradores podem adicionar membros.')
+        # has_object_permission não é chamado automaticamente em ListCreateAPIView
+        # (get_object() não é invocado no fluxo de criação).
+        self.check_object_permissions(self.request, grupo)
         serializer.save(group=grupo)
 
 

@@ -1,10 +1,11 @@
 from django.shortcuts import get_object_or_404
-from rest_framework import generics, status
+from rest_framework import generics, permissions, status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.groups.models import Group, GroupMember
+from apps.groups.permissions import IsGroupMember
 from .models import Debt, Installment
 
 _grupos_do_user = lambda user: GroupMember.objects.filter(user=user).values('group_id')
@@ -39,12 +40,17 @@ class DespesasPorGrupoView(generics.ListAPIView):
 class DespesaCreateView(APIView):
     """POST /api/despesas/ — cria despesa com parcelas atomicamente."""
 
+    permission_classes = [permissions.IsAuthenticated, IsGroupMember]
+
     def post(self, request):
         serializer = DespesaFormSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
         grupo = get_object_or_404(Group, pk=data['grupo_id'])
+        # has_object_permission não é chamado automaticamente em APIView —
+        # chamada explícita obrigatória aqui.
+        self.check_object_permissions(request, grupo)
 
         try:
             despesa = criar_despesa(
