@@ -138,6 +138,7 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Rachei <noreply@rachei.app>')
 
-# Criptografia TOTP (Fernet) — defina TOTP_ENCRYPTION_KEY via env em produção
+# Criptografia TOTP (Fernet) — OBRIGATÓRIA via variável de ambiente.
 # Gere com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-TOTP_ENCRYPTION_KEY = os.getenv('TOTP_ENCRYPTION_KEY', 'YNqvfjrYdzvwqJQQiHQCV_-2eeWNfya4UAHsxiNdNwU=')
+# Sem esta variável, qualquer operação 2FA lança ImproperlyConfigured (ver apps/users/fields.py).
+TOTP_ENCRYPTION_KEY = os.getenv('TOTP_ENCRYPTION_KEY', '')

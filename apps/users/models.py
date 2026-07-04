@@ -126,14 +126,18 @@ class TwoFactorConfig(models.Model):
                 break
 
         if matched_counter is not None:
-            # Replay: mesmo contador já foi aceito → rejeitar
-            if matched_counter == self.last_otp_counter:
-                return False
-            type(self).objects.filter(pk=self.pk).update(
+            # Update atômico: só atualiza se o banco ainda NÃO tem este counter.
+            # Previne replay em race condition (TOCTOU): dois requests concorrentes
+            # passariam o check em memória, mas apenas um ganha o UPDATE no banco.
+            updated = type(self).objects.filter(pk=self.pk).exclude(
+                last_otp_counter=matched_counter,
+            ).update(
                 last_otp_counter=matched_counter,
                 otp_fail_count=0,
                 otp_locked_until=None,
             )
+            if updated == 0:
+                return False  # replay: counter já foi aceito (inclui race condition)
             self.last_otp_counter = matched_counter
             self.otp_fail_count = 0
             self.otp_locked_until = None
