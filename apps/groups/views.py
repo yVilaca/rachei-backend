@@ -1,10 +1,10 @@
 from django.db.models import Count, Prefetch
-from rest_framework import generics, status
+from rest_framework import generics, permissions, status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from .models import Group, GroupMember
-from .permissions import IsGroupAdmin
+from .permissions import IsGroupAdmin, IsGroupMember
 from .serializers import (
     GrupoDetailSerializer,
     GrupoFormSerializer,
@@ -89,7 +89,7 @@ class MembroListCreateView(generics.ListCreateAPIView):
     def get_permissions(self):
         # POST exige admin; GET basta ser membro (filtrado pelo queryset)
         if self.request.method == 'POST':
-            return [IsGroupAdmin()]
+            return [permissions.IsAuthenticated(), IsGroupAdmin()]
         return super().get_permissions()
 
     def get_serializer_class(self):
@@ -125,8 +125,13 @@ class MembroListCreateView(generics.ListCreateAPIView):
 class MembroDestroyView(generics.DestroyAPIView):
     """DELETE /api/grupos/{grupo_pk}/membros/{user_pk}/ — remove membro (somente admins)."""
 
+    permission_classes = [permissions.IsAuthenticated, IsGroupAdmin]
+
     def get_object(self):
-        grupo = _get_grupo(self.kwargs['grupo_pk'], self.request.user, require_admin=True)
+        # Passo 1: 404 se não é membro (esconde existência do grupo para outsiders)
+        grupo = _get_grupo(self.kwargs['grupo_pk'], self.request.user, require_admin=False)
+        # Passo 2: 403 se é membro mas não é admin
+        self.check_object_permissions(self.request, grupo)
         try:
             return GroupMember.objects.get(group=grupo, user_id=self.kwargs['user_pk'])
         except GroupMember.DoesNotExist:

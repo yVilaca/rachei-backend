@@ -1,8 +1,10 @@
 """
 Testes de controle de acesso — grupos, membros e despesas.
 
-Verifica que IsGroupMember e IsGroupAdmin bloqueiam com 403 (não 404)
-quando o usuário não tem o nível de acesso necessário.
+Comportamento padrão do projeto:
+- Outsider (não-membro): 404 — esconde existência do recurso
+- Membro sem permissão suficiente (ex: não-admin): 403
+- Não autenticado: 401
 """
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -35,9 +37,8 @@ def _token(user):
 
 class DespesaCreatePermissionTest(TestCase):
     """
-    Verifica que DespesaCreateView retorna 403 para não-membros.
-    IsGroupMember.has_object_permission é chamado via check_object_permissions
-    explícito — NÃO automaticamente (APIView, não generic view).
+    Verifica que DespesaCreateView retorna 404 para não-membros (esconde existência do grupo).
+    Membership verificada por queryset filtering, consistente com o restante do projeto.
     """
 
     def setUp(self):
@@ -55,17 +56,13 @@ class DespesaCreatePermissionTest(TestCase):
             'parcelas': [{'debtor_id': self.owner.pk, 'amount_cents': 10000}],
         }
 
-    def test_non_member_gets_403_not_404(self):
-        """
-        Não-membro tenta criar despesa no grupo → 403.
-        O grupo existe (seria 404 se a URL não existisse) — mas o acesso é negado
-        antes de chamar o service, via IsGroupMember.check_object_permissions.
-        """
+    def test_non_member_gets_404(self):
+        """Não-membro tenta criar despesa no grupo → 404 (grupo não encontrado no queryset)."""
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {_token(self.outsider)}')
         r = self.client.post('/api/despesas/', self._payload(), format='json')
         self.assertEqual(
-            r.status_code, 403,
-            f'Esperado 403, recebido {r.status_code}: {r.data}'
+            r.status_code, 404,
+            f'Esperado 404, recebido {r.status_code}: {r.data}'
         )
 
     def test_member_can_create_despesa(self):
@@ -136,7 +133,55 @@ class MembroAddPermissionTest(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 3. Último admin — não pode ser removido
+# 3. MembroDestroyView — membro comum tenta DELETE
+# ---------------------------------------------------------------------------
+
+class MembroDestroyPermissionTest(TestCase):
+    """
+    Verifica que DELETE /membros/{pk}/ retorna 403 para membros sem role admin
+    e 404 para outsiders (não-membros).
+    """
+
+    def setUp(self):
+        self.admin = _make_user('admin2@test.com')
+        self.member = _make_user('member2@test.com')
+        self.outsider = _make_user('outsider2@test.com')
+        self.target = _make_user('target@test.com')
+        self.group = _make_group(self.admin)
+        GroupMember.objects.create(group=self.group, user=self.member, role=GroupMember.ROLE_MEMBER)
+        GroupMember.objects.create(group=self.group, user=self.target, role=GroupMember.ROLE_MEMBER)
+        self.client = APIClient()
+
+    def test_non_admin_member_delete_gets_403(self):
+        """Membro comum tenta remover outro membro (não o último admin) → 403."""
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {_token(self.member)}')
+        url = f'/api/grupos/{self.group.pk}/membros/{self.target.pk}/'
+        r = self.client.delete(url)
+        self.assertEqual(
+            r.status_code, 403,
+            f'Esperado 403, recebido {r.status_code}: {r.data}'
+        )
+        self.assertTrue(
+            GroupMember.objects.filter(group=self.group, user=self.target).exists(),
+            'Membro foi removido indevidamente por não-admin.'
+        )
+
+    def test_unauthenticated_post_membros_gets_401(self):
+        """
+        POST /membros/ sem autenticação → 401.
+        Verifica que get_permissions() inclui IsAuthenticated antes de IsGroupAdmin,
+        impedindo que AnonymousUser chegue ao has_object_permission (evita TypeError).
+        """
+        url = f'/api/grupos/{self.group.pk}/membros/'
+        r = self.client.post(url, {'user_id': self.outsider.pk}, format='json')
+        self.assertEqual(
+            r.status_code, 401,
+            f'Esperado 401, recebido {r.status_code}: {r.data}'
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. Último admin — não pode ser removido
 # ---------------------------------------------------------------------------
 
 class LastAdminProtectionTest(TestCase):
