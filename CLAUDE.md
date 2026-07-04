@@ -103,3 +103,27 @@ Exemplos de código detalhados em `.claude/rules/`.
 - `makemigrations <app>` — nunca `makemigrations` geral em produção
 - Nunca editar migration já aplicada em produção
 - Revisar com `sqlmigrate` antes de aplicar em produção
+- Migrations de dados com credenciais: chave em `os.environ.get('VAR')` sem default — no-op se ausente (seguro em CI)
+- Contar e logar: processados, pulados e motivo de cada skip — nenhuma linha falha silenciosamente
+- Erro em qualquer linha: `raise RuntimeError(...)` para reverter a transação inteira
+- Exceções específicas: nunca `except Exception` — capturar `InvalidToken`, `binascii.Error`, `UnicodeDecodeError` separadamente
+
+---
+
+## M2F — Autenticação de Dois Fatores
+
+Sistema completo em `apps/users/`. Não reimplementar; estender sobre o que existe.
+
+- **TOTP**: `pyotp` + `EncryptedCharField` (Fernet) — secret at-rest; chave via `TOTP_ENCRYPTION_KEY` (sem fallback)
+- **Anti-replay**: `exclude(last_otp_counter=counter).update(...)` — 0 rows = replay; sem lock explícito
+- **Rate limiting**: `otp_fail_count` + `otp_locked_until` por config (5 falhas → 5 min, 10 → 1 hora)
+- **Trusted devices**: token SHA-256, validade 30 dias, revogáveis via `DELETE /api/auth/2fa/trusted-devices/<id>/`
+- **`TwoFAPendingToken`**: `type='2fa_pending'`, 15 min, rejeitado em rotas que exigem `type='access'`
+- **Blacklist**: ativar E desativar 2FA invalida todos os `OutstandingToken` com `bulk_create(ignore_conflicts=True)`
+
+### Testes — isolamento obrigatório
+
+- `@override_settings(TOTP_ENCRYPTION_KEY=_TEST_ENCRYPTION_KEY)` em toda classe que instancia `TwoFactorConfig`
+- `cache.clear()` no `setUp` de toda classe com endpoints que usam `AuthRateThrottle`
+- Testes com threading: `TransactionTestCase` (não `TestCase`) — `TestCase` não comita; threads não vêem o banco
+- Testar lógica de migration diretamente: `importlib.import_module('apps.users.migrations.0009_...')` + `mock_editor.connection = connection`
