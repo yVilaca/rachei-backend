@@ -1,11 +1,24 @@
 import hashlib
 import secrets
+import string
 from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
+
+_BACKUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
+
+
+def generate_backup_codes(count: int = 8) -> list[str]:
+    """Gera códigos de backup no formato XXXX-XXXX."""
+    return [
+        ''.join(secrets.choice(_BACKUP_CODE_ALPHABET) for _ in range(4))
+        + '-'
+        + ''.join(secrets.choice(_BACKUP_CODE_ALPHABET) for _ in range(4))
+        for _ in range(count)
+    ]
 
 
 class User(AbstractUser):
@@ -49,6 +62,59 @@ class NotificacaoLida(models.Model):
 
     def __str__(self):
         return f'{self.usuario_id} leu {self.evento_id}'
+
+
+class TwoFactorConfig(models.Model):
+    id = models.BigAutoField(primary_key=True, db_column='tfa_id')
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='two_factor_config',
+        db_column='tfa_usuario_id',
+    )
+    secret = models.CharField(max_length=64, db_column='tfa_secret')
+    is_active = models.BooleanField(default=False, db_column='tfa_ativo')
+    backup_codes = models.JSONField(default=list, db_column='tfa_backup_codes')
+    created_at = models.DateTimeField(auto_now_add=True, db_column='tfa_criado_em')
+    updated_at = models.DateTimeField(auto_now=True, db_column='tfa_atualizado_em')
+
+    class Meta:
+        db_table = 'configs_2fa'
+
+    def verify_totp_or_backup(self, code: str) -> bool:
+        """Verifica TOTP ou backup code. Consome o backup code se usado."""
+        import pyotp
+        code = code.strip().replace(' ', '').replace('-', '')
+        totp = pyotp.TOTP(self.secret)
+        if totp.verify(code, valid_window=1):
+            return True
+        # Tenta backup code (aceita com e sem hífen)
+        raw_with_dash = f'{code[:4]}-{code[4:]}' if len(code) == 8 else code
+        for candidate in (code, raw_with_dash):
+            candidate_hash = hashlib.sha256(candidate.encode()).hexdigest()
+            if candidate_hash in self.backup_codes:
+                self.backup_codes = [h for h in self.backup_codes if h != candidate_hash]
+                self.save(update_fields=['backup_codes', 'updated_at'])
+                return True
+        return False
+
+
+class TrustedDevice(models.Model):
+    id = models.BigAutoField(primary_key=True, db_column='trd_id')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='trusted_devices',
+        db_column='trd_usuario_id',
+    )
+    token_hash = models.CharField(max_length=64, db_column='trd_token_hash')
+    user_agent = models.CharField(max_length=256, blank=True, db_column='trd_user_agent')
+    expires_at = models.DateTimeField(db_column='trd_expires_at')
+    created_at = models.DateTimeField(auto_now_add=True, db_column='trd_criado_em')
+
+    class Meta:
+        db_table = 'dispositivos_confiaveis'
+        indexes = [models.Index(fields=['user', 'token_hash', 'expires_at'])]
 
 
 class PasswordResetCode(models.Model):

@@ -1,6 +1,13 @@
+import hashlib
+
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from .models import TrustedDevice, TwoFactorConfig
+from .tokens import TwoFAPendingToken
 
 User = get_user_model()
 
@@ -43,7 +50,7 @@ class UserFormSerializer(serializers.ModelSerializer):
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Login: adiciona claim 'plan' no JWT e retorna dados do usuário na resposta."""
+    """Login: verifica 2FA antes de emitir tokens, adiciona claim 'plan'."""
 
     @classmethod
     def get_token(cls, user):
@@ -53,8 +60,36 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
     def validate(self, attrs):
         data = super().validate(attrs)
-        data['user'] = UserDetailSerializer(self.user).data
-        return data
+        user = self.user
+
+        # Verifica se o usuário tem 2FA ativo
+        config = TwoFactorConfig.objects.filter(user=user, is_active=True).first()
+        if not config:
+            data['user'] = UserDetailSerializer(user).data
+            return data
+
+        # Verifica dispositivo confiável
+        trusted_token = (self.context.get('request').data.get('trusted_device_token') or '').strip()
+        if trusted_token:
+            token_hash = hashlib.sha256(trusted_token.encode()).hexdigest()
+            is_trusted = TrustedDevice.objects.filter(
+                user=user,
+                token_hash=token_hash,
+                expires_at__gt=timezone.now(),
+            ).exists()
+            if is_trusted:
+                data['user'] = UserDetailSerializer(user).data
+                return data
+
+        # 2FA necessário — invalida o refresh token que acabou de ser criado
+        try:
+            RefreshToken(data['refresh']).blacklist()
+        except Exception:
+            pass
+
+        pending = TwoFAPendingToken()
+        pending['user_id'] = user.pk
+        return {'requires_2fa': True, 'pending_token': str(pending)}
 
 
 class RegisterSerializer(serializers.Serializer):
