@@ -1,12 +1,21 @@
 import hashlib
+import hmac as hmac_module
 import secrets
 import string
+import time
 from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
+
+from .fields import EncryptedCharField
+
+
+class TOTPLocked(Exception):
+    """Lançada quando a verificação TOTP está bloqueada por excesso de tentativas."""
+    pass
 
 _BACKUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
 
@@ -65,6 +74,9 @@ class NotificacaoLida(models.Model):
 
 
 class TwoFactorConfig(models.Model):
+    _LOCKOUT_THRESHOLD_SOFT = 5    # 5 falhas → 5 min
+    _LOCKOUT_THRESHOLD_HARD = 10   # 10 falhas → 1 hora
+
     id = models.BigAutoField(primary_key=True, db_column='tfa_id')
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -72,9 +84,14 @@ class TwoFactorConfig(models.Model):
         related_name='two_factor_config',
         db_column='tfa_usuario_id',
     )
-    secret = models.CharField(max_length=64, db_column='tfa_secret')
+    secret = EncryptedCharField(max_length=512, db_column='tfa_secret')
     is_active = models.BooleanField(default=False, db_column='tfa_ativo')
     backup_codes = models.JSONField(default=list, db_column='tfa_backup_codes')
+    # Proteção anti-replay: contador da última janela TOTP aceita (-1 = nunca)
+    last_otp_counter = models.BigIntegerField(default=-1, db_column='tfa_last_otp_counter')
+    # Rate limiting por config (não apenas por IP)
+    otp_fail_count = models.IntegerField(default=0, db_column='tfa_otp_fail_count')
+    otp_locked_until = models.DateTimeField(null=True, blank=True, db_column='tfa_otp_locked_until')
     created_at = models.DateTimeField(auto_now_add=True, db_column='tfa_criado_em')
     updated_at = models.DateTimeField(auto_now=True, db_column='tfa_atualizado_em')
 
@@ -82,20 +99,86 @@ class TwoFactorConfig(models.Model):
         db_table = 'configs_2fa'
 
     def verify_totp_or_backup(self, code: str) -> bool:
-        """Verifica TOTP ou backup code. Consome o backup code se usado."""
+        """Verifica TOTP (com anti-replay) ou backup code (constant-time).
+
+        Lança TOTPLocked se bloqueado por excesso de tentativas.
+        Retorna True em caso de sucesso, False em caso de falha.
+        Backup codes são consumidos (removidos) na primeira utilização.
+        """
         import pyotp
+
+        # 1. Lockout check
+        if self.otp_locked_until and self.otp_locked_until > timezone.now():
+            raise TOTPLocked()
+
         code = code.strip().replace(' ', '').replace('-', '')
+
+        # 2. TOTP com anti-replay e constant-time compare
         totp = pyotp.TOTP(self.secret)
-        if totp.verify(code, valid_window=1):
+        counter = int(time.time() // 30)
+        matched_counter = None
+
+        for delta in (-1, 0, 1):
+            c = counter + delta
+            expected = totp.at(c * 30)
+            if len(code) == len(expected) and hmac_module.compare_digest(code, expected):
+                matched_counter = c
+                break
+
+        if matched_counter is not None:
+            # Replay: mesmo contador já foi aceito → rejeitar
+            if matched_counter == self.last_otp_counter:
+                return False
+            type(self).objects.filter(pk=self.pk).update(
+                last_otp_counter=matched_counter,
+                otp_fail_count=0,
+                otp_locked_until=None,
+            )
+            self.last_otp_counter = matched_counter
+            self.otp_fail_count = 0
+            self.otp_locked_until = None
             return True
-        # Tenta backup code (aceita com e sem hífen)
-        raw_with_dash = f'{code[:4]}-{code[4:]}' if len(code) == 8 else code
-        for candidate in (code, raw_with_dash):
-            candidate_hash = hashlib.sha256(candidate.encode()).hexdigest()
-            if candidate_hash in self.backup_codes:
-                self.backup_codes = [h for h in self.backup_codes if h != candidate_hash]
-                self.save(update_fields=['backup_codes', 'updated_at'])
-                return True
+
+        # 3. Backup codes — constant-time compare contra cada hash armazenado
+        code_dash = f'{code[:4]}-{code[4:]}' if len(code) == 8 else code
+        h_plain = hashlib.sha256(code.encode()).hexdigest()
+        h_dash = hashlib.sha256(code_dash.encode()).hexdigest()
+
+        matched_hash = None
+        for stored_hash in self.backup_codes:
+            m1 = secrets.compare_digest(stored_hash, h_plain)
+            m2 = secrets.compare_digest(stored_hash, h_dash)
+            if (m1 | m2) and matched_hash is None:  # | avalia os dois lados (sem short-circuit)
+                matched_hash = stored_hash
+
+        if matched_hash:
+            self.backup_codes = [
+                h for h in self.backup_codes
+                if not secrets.compare_digest(h, matched_hash)
+            ]
+            type(self).objects.filter(pk=self.pk).update(
+                backup_codes=self.backup_codes,
+                otp_fail_count=0,
+                otp_locked_until=None,
+            )
+            self.otp_fail_count = 0
+            self.otp_locked_until = None
+            return True
+
+        # 4. Falha — incrementa tentativas atomicamente e aplica lockout
+        type(self).objects.filter(pk=self.pk).update(
+            otp_fail_count=models.F('otp_fail_count') + 1,
+        )
+        self.refresh_from_db(fields=['otp_fail_count'])
+        fail_count = self.otp_fail_count
+
+        if fail_count >= self._LOCKOUT_THRESHOLD_HARD:
+            lockout_until = timezone.now() + timedelta(hours=1)
+            type(self).objects.filter(pk=self.pk).update(otp_locked_until=lockout_until)
+        elif fail_count >= self._LOCKOUT_THRESHOLD_SOFT:
+            lockout_until = timezone.now() + timedelta(minutes=5)
+            type(self).objects.filter(pk=self.pk).update(otp_locked_until=lockout_until)
+
         return False
 
 
@@ -110,6 +193,7 @@ class TrustedDevice(models.Model):
     token_hash = models.CharField(max_length=64, db_column='trd_token_hash')
     user_agent = models.CharField(max_length=256, blank=True, db_column='trd_user_agent')
     expires_at = models.DateTimeField(db_column='trd_expires_at')
+    last_used_at = models.DateTimeField(null=True, blank=True, db_column='trd_ultimo_uso')
     created_at = models.DateTimeField(auto_now_add=True, db_column='trd_criado_em')
 
     class Meta:

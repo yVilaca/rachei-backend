@@ -6,6 +6,8 @@ from .views import (
     MeView,
     RegisterView,
     ResetPasswordView,
+    TrustedDeviceDeleteView,
+    TrustedDeviceListView,
     TwoFactorChallengeView,
     TwoFactorDisableView,
     TwoFactorRegenerateBackupCodesView,
@@ -29,4 +31,6 @@ urlpatterns = [
     path('2fa/challenge/', TwoFactorChallengeView.as_view(), name='2fa_challenge'),
     path('2fa/disable/', TwoFactorDisableView.as_view(), name='2fa_disable'),
     path('2fa/backup-codes/regenerate/', TwoFactorRegenerateBackupCodesView.as_view(), name='2fa_backup_codes_regenerate'),
+    path('2fa/trusted-devices/', TrustedDeviceListView.as_view(), name='2fa_trusted_devices'),
+    path('2fa/trusted-devices/<int:pk>/', TrustedDeviceDeleteView.as_view(), name='2fa_trusted_device_delete'),
 ]

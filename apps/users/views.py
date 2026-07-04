@@ -18,7 +18,7 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView as BaseTokenObtainPairView
 
-from .models import PasswordResetCode, TrustedDevice, TwoFactorConfig, generate_backup_codes
+from .models import PasswordResetCode, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
 from .serializers import (
     CustomTokenObtainPairSerializer,
     RegisterSerializer,
@@ -168,12 +168,13 @@ class ResetPasswordView(APIView):
         user.set_password(new_password)
         user.save(update_fields=['password'])
 
-        # Invalida todos os refresh tokens ativos (logout em todos os dispositivos)
+        # Invalida todos os refresh tokens ativos + revoga dispositivos confiados
         outstanding = OutstandingToken.objects.filter(user=user)
         BlacklistedToken.objects.bulk_create(
             [BlacklistedToken(token=t) for t in outstanding],
             ignore_conflicts=True,
         )
+        TrustedDevice.objects.filter(user=user).delete()
 
         # E-mail de confirmação (best-effort)
         nome = user.get_full_name() or user.username
@@ -239,6 +240,13 @@ class TwoFactorSetupConfirmView(APIView):
         config.backup_codes = [hashlib.sha256(c.encode()).hexdigest() for c in codes]
         config.save(update_fields=['is_active', 'backup_codes', 'updated_at'])
 
+        # Força re-autenticação em todos os dispositivos após ativar 2FA
+        outstanding = OutstandingToken.objects.filter(user=request.user)
+        BlacklistedToken.objects.bulk_create(
+            [BlacklistedToken(token=t) for t in outstanding],
+            ignore_conflicts=True,
+        )
+
         return Response({'backup_codes': codes})
 
 
@@ -255,7 +263,12 @@ class TwoFactorRegenerateBackupCodesView(APIView):
         except TwoFactorConfig.DoesNotExist:
             raise ValidationError({'detail': 'Autenticador não está ativo.'})
 
-        if not pyotp.TOTP(config.secret).verify(code, valid_window=1):
+        try:
+            verified = config.verify_totp_or_backup(code)
+        except TOTPLocked:
+            raise ValidationError({'detail': 'Muitas tentativas incorretas. Aguarde alguns minutos e tente novamente.'})
+
+        if not verified:
             raise ValidationError({'code': ['Código inválido.']})
 
         codes = generate_backup_codes(8)
@@ -296,7 +309,12 @@ class TwoFactorChallengeView(APIView):
         if not config:
             raise ValidationError({'detail': 'Token inválido ou expirado.'})
 
-        if not config.verify_totp_or_backup(code):
+        try:
+            verified = config.verify_totp_or_backup(code)
+        except TOTPLocked:
+            raise ValidationError({'detail': 'Muitas tentativas incorretas. Aguarde alguns minutos e tente novamente.'})
+
+        if not verified:
             raise ValidationError({'code': ['Código inválido.']})
 
         refresh = RefreshToken.for_user(user)
@@ -344,7 +362,12 @@ class TwoFactorDisableView(APIView):
         except TwoFactorConfig.DoesNotExist:
             raise ValidationError({'detail': 'Autenticador não está ativo.'})
 
-        if not config.verify_totp_or_backup(code):
+        try:
+            verified = config.verify_totp_or_backup(code)
+        except TOTPLocked:
+            raise ValidationError({'detail': 'Muitas tentativas incorretas. Aguarde alguns minutos e tente novamente.'})
+
+        if not verified:
             raise ValidationError({'code': ['Código inválido.']})
 
         config.is_active = False
@@ -354,6 +377,13 @@ class TwoFactorDisableView(APIView):
 
         TrustedDevice.objects.filter(user=request.user).delete()
 
+        # Invalida todos os refresh tokens ao desativar 2FA
+        outstanding = OutstandingToken.objects.filter(user=request.user)
+        BlacklistedToken.objects.bulk_create(
+            [BlacklistedToken(token=t) for t in outstanding],
+            ignore_conflicts=True,
+        )
+
         return Response({'detail': 'Autenticador desativado com sucesso.'})
 
 
@@ -362,4 +392,35 @@ class TwoFactorStatusView(APIView):
 
     def get(self, request):
         config = TwoFactorConfig.objects.filter(user=request.user).first()
-        return Response({'is_active': bool(config and config.is_active)})
+        backup_remaining = len(config.backup_codes) if config and config.is_active else 0
+        return Response({
+            'is_active': bool(config and config.is_active),
+            'backup_codes_remaining': backup_remaining,
+        })
+
+
+class TrustedDeviceListView(APIView):
+    """GET /api/auth/2fa/trusted-devices/ — lista dispositivos confiados (não expirados)."""
+
+    def get(self, request):
+        devices = TrustedDevice.objects.filter(
+            user=request.user,
+            expires_at__gt=timezone.now(),
+        ).order_by('-created_at')
+        return Response([{
+            'id': d.id,
+            'user_agent': d.user_agent or 'Desconhecido',
+            'created_at': d.created_at,
+            'last_used_at': d.last_used_at,
+            'expires_at': d.expires_at,
+        } for d in devices])
+
+
+class TrustedDeviceDeleteView(APIView):
+    """DELETE /api/auth/2fa/trusted-devices/<pk>/ — revoga um dispositivo específico."""
+
+    def delete(self, request, pk):
+        deleted, _ = TrustedDevice.objects.filter(pk=pk, user=request.user).delete()
+        if not deleted:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -72,12 +72,15 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         trusted_token = (self.context.get('request').data.get('trusted_device_token') or '').strip()
         if trusted_token:
             token_hash = hashlib.sha256(trusted_token.encode()).hexdigest()
-            is_trusted = TrustedDevice.objects.filter(
+            td = TrustedDevice.objects.filter(
                 user=user,
                 token_hash=token_hash,
                 expires_at__gt=timezone.now(),
-            ).exists()
+            ).first()
+            is_trusted = td is not None
             if is_trusted:
+                # Registra último uso do dispositivo
+                TrustedDevice.objects.filter(pk=td.pk).update(last_used_at=timezone.now())
                 data['user'] = UserDetailSerializer(user).data
                 return data
 
