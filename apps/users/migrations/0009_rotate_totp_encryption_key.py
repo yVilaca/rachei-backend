@@ -1,74 +1,127 @@
 """
-Data migration: re-criptografa secrets TOTP da chave antiga (hardcoded/comprometida)
-para a nova chave fornecida via TOTP_ENCRYPTION_KEY.
+Data migration: re-criptografa secrets TOTP de uma chave antiga para a nova.
 
 Como executar:
-  1. Defina TOTP_ENCRYPTION_KEY=<nova_chave> no ambiente
-  2. python manage.py migrate users 0009
+  TOTP_OLD_ENCRYPTION_KEY=<chave_antiga> python manage.py migrate users 0009
 
-A chave antiga (OLD_KEY abaixo) estava hardcoded em settings.py e é agora tratada
-como comprometida. Após esta migration, ela não é mais usada pelo sistema.
+  Sem TOTP_OLD_ENCRYPTION_KEY: migration pulada (no-op seguro — útil em CI).
+  Sem TOTP_ENCRYPTION_KEY: migration pulada.
+  Chaves iguais: migration pulada.
 
-A migration é idempotente: se a nova chave for igual à antiga, ou se não estiver
-configurada, ela não faz nada.
+Contagem obrigatória: rotacionados, pulados (chave diferente), vazios.
+Nenhuma linha falha silenciosamente — erros levantam RuntimeError e revertem.
 """
+import binascii
+import logging
+import os
+
 from django.db import migrations
 
-
-# Chave antiga que estava hardcoded em settings.py — já pública no histórico do git.
-# Está aqui APENAS para permitir a descriptografia dos dados já existentes.
-_OLD_KEY = b'YNqvfjrYdzvwqJQQiHQCV_-2eeWNfya4UAHsxiNdNwU='
+logger = logging.getLogger(__name__)
 
 
 def rotate_key_forward(apps, schema_editor):
     from cryptography.fernet import Fernet, InvalidToken
     from django.conf import settings as django_settings
 
+    old_key_str = os.environ.get('TOTP_OLD_ENCRYPTION_KEY', '')
+    if not old_key_str:
+        logger.info('rotate_key_forward: TOTP_OLD_ENCRYPTION_KEY ausente — migration pulada (no-op).')
+        return
+
     new_key_str = getattr(django_settings, 'TOTP_ENCRYPTION_KEY', '')
     if not new_key_str:
-        return  # chave nova não configurada — pula (ex: ambiente de CI sem a env var)
+        logger.info('rotate_key_forward: TOTP_ENCRYPTION_KEY ausente — migration pulada (no-op).')
+        return
 
+    old_key = old_key_str.encode() if isinstance(old_key_str, str) else old_key_str
     new_key = new_key_str.encode() if isinstance(new_key_str, str) else new_key_str
 
-    if new_key == _OLD_KEY:
-        return  # chaves idênticas — sem rotação necessária (ex: testes com @override_settings)
+    if new_key == old_key:
+        logger.info('rotate_key_forward: chaves idênticas — sem rotação necessária.')
+        return
 
-    old_fernet = Fernet(_OLD_KEY)
+    old_fernet = Fernet(old_key)
     new_fernet = Fernet(new_key)
+
+    rotated = 0
+    skipped_empty = 0
+    skipped_not_old_key = 0
+    errors = []
 
     with schema_editor.connection.cursor() as cursor:
         cursor.execute("SELECT tfa_id, tfa_secret FROM configs_2fa WHERE tfa_secret != ''")
         rows = cursor.fetchall()
+        total = len(rows)
+
         for pk, secret in rows:
             if not secret:
+                skipped_empty += 1
+                logger.debug('rotate_key_forward: tfa_id=%s — secret vazio, pulado', pk)
                 continue
+
             try:
                 plaintext = old_fernet.decrypt(secret.encode()).decode()
-            except (InvalidToken, Exception):
-                # Não estava criptografado com a chave antiga — ignora
+            except (InvalidToken, binascii.Error):
+                skipped_not_old_key += 1
+                logger.debug(
+                    'rotate_key_forward: tfa_id=%s — não criptografado com TOTP_OLD_ENCRYPTION_KEY, pulado',
+                    pk,
+                )
                 continue
-            new_encrypted = new_fernet.encrypt(plaintext.encode()).decode()
-            cursor.execute(
-                'UPDATE configs_2fa SET tfa_secret = %s WHERE tfa_id = %s',
-                [new_encrypted, pk],
-            )
+            except UnicodeDecodeError as exc:
+                errors.append(f'tfa_id={pk}: UnicodeDecodeError após decrypt: {exc}')
+                continue
+
+            try:
+                new_encrypted = new_fernet.encrypt(plaintext.encode()).decode()
+                cursor.execute(
+                    'UPDATE configs_2fa SET tfa_secret = %s WHERE tfa_id = %s',
+                    [new_encrypted, pk],
+                )
+                rotated += 1
+            except Exception as exc:
+                errors.append(f'tfa_id={pk}: erro ao re-criptografar: {type(exc).__name__}: {exc}')
+
+    logger.info(
+        'rotate_key_forward concluído: total=%d | rotacionados=%d | '
+        'pulados_chave_diferente=%d | pulados_vazios=%d',
+        total, rotated, skipped_not_old_key, skipped_empty,
+    )
+
+    if errors:
+        for err in errors:
+            logger.error('rotate_key_forward: LINHA COM FALHA — %s', err)
+        raise RuntimeError(
+            f'rotate_key_forward: {len(errors)} linha(s) com falha. '
+            f'Transação revertida. Verifique os logs acima.'
+        )
 
 
 def rotate_key_reverse(apps, schema_editor):
-    """Reverter: re-criptografa com a chave antiga (rollback de emergência)."""
+    """Reverter: re-criptografa de TOTP_ENCRYPTION_KEY → TOTP_OLD_ENCRYPTION_KEY."""
     from cryptography.fernet import Fernet, InvalidToken
     from django.conf import settings as django_settings
 
+    old_key_str = os.environ.get('TOTP_OLD_ENCRYPTION_KEY', '')
     new_key_str = getattr(django_settings, 'TOTP_ENCRYPTION_KEY', '')
-    if not new_key_str:
+
+    if not old_key_str or not new_key_str:
+        logger.info('rotate_key_reverse: chaves ausentes — reverse pulado (no-op).')
         return
 
+    old_key = old_key_str.encode() if isinstance(old_key_str, str) else old_key_str
     new_key = new_key_str.encode() if isinstance(new_key_str, str) else new_key_str
-    if new_key == _OLD_KEY:
+
+    if new_key == old_key:
         return
 
-    old_fernet = Fernet(_OLD_KEY)
+    old_fernet = Fernet(old_key)
     new_fernet = Fernet(new_key)
+
+    rotated = 0
+    skipped = 0
+    errors = []
 
     with schema_editor.connection.cursor() as cursor:
         cursor.execute("SELECT tfa_id, tfa_secret FROM configs_2fa WHERE tfa_secret != ''")
@@ -78,13 +131,27 @@ def rotate_key_reverse(apps, schema_editor):
                 continue
             try:
                 plaintext = new_fernet.decrypt(secret.encode()).decode()
-            except (InvalidToken, Exception):
+            except (InvalidToken, binascii.Error):
+                skipped += 1
                 continue
-            old_encrypted = old_fernet.encrypt(plaintext.encode()).decode()
-            cursor.execute(
-                'UPDATE configs_2fa SET tfa_secret = %s WHERE tfa_id = %s',
-                [old_encrypted, pk],
-            )
+            except UnicodeDecodeError as exc:
+                errors.append(f'tfa_id={pk}: UnicodeDecodeError: {exc}')
+                continue
+            try:
+                old_encrypted = old_fernet.encrypt(plaintext.encode()).decode()
+                cursor.execute(
+                    'UPDATE configs_2fa SET tfa_secret = %s WHERE tfa_id = %s',
+                    [old_encrypted, pk],
+                )
+                rotated += 1
+            except Exception as exc:
+                errors.append(f'tfa_id={pk}: {type(exc).__name__}: {exc}')
+
+    logger.info('rotate_key_reverse concluído: rotacionados=%d pulados=%d', rotated, skipped)
+    if errors:
+        for err in errors:
+            logger.error('rotate_key_reverse: FALHA — %s', err)
+        raise RuntimeError(f'rotate_key_reverse: {len(errors)} falha(s).')
 
 
 class Migration(migrations.Migration):

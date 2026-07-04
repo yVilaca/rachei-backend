@@ -8,7 +8,7 @@ import time
 import pyotp
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -479,35 +479,201 @@ class BlacklistOnTwoFactorDisableTest(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 11. Race condition anti-replay — update atômico
+# 11. Race condition anti-replay — concorrência real com threading
 # ---------------------------------------------------------------------------
 
 @override_settings(TOTP_ENCRYPTION_KEY=_TEST_ENCRYPTION_KEY)
-class TOTPReplayConcurrentTest(TestCase):
-    """Verifica que o update atômico previne replay em race condition."""
+class TOTPReplayConcurrentTest(TransactionTestCase):
+    """
+    Testa anti-replay com concorrência real via threading.
+
+    NOTA sobre SQLite: o SQLite serializa writes a nível de lock de arquivo
+    (uma thread escreve por vez). O teste passa corretamente porque nosso
+    exclude() faz o segundo UPDATE retornar 0 rows quando o counter já foi
+    aceito — mas a serialização do SQLite garante que o primeiro UPDATE
+    termine antes do segundo começar. Em PostgreSQL, ambos os UPDATEs podem
+    ocorrer verdadeiramente em paralelo, e o exclude() é o único mecanismo
+    que impede o double-accept (sem lock explícito de linha, pois o UPDATE
+    WHERE é atômico em nível de row no PG). O resultado final (apenas um
+    True) é o mesmo em ambos os bancos.
+
+    Use `test_stale_object_replay_blocked_by_atomic_update` para verificar
+    o exclude() diretamente, isolado de qualquer serialização de banco.
+    """
 
     def setUp(self):
         cache.clear()
         self.user = _make_user('concurrent@test.com')
         self.config = _make_2fa(self.user)
 
-    def test_atomic_update_prevents_concurrent_replay(self):
-        """Dois objetos em memória com last_otp_counter stale — só um deve passar."""
+    def test_concurrent_threads_only_one_passes(self):
+        """Duas threads simultâneas com o mesmo código: exatamente uma retorna True."""
+        import threading
+        from django.db import connection as _conn
+
+        code = pyotp.TOTP(self.config.secret).now()
+        results = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def attempt():
+            # Cada thread carrega o objeto fresh do banco — simula requests independentes
+            config = TwoFactorConfig.objects.get(pk=self.config.pk)
+            barrier.wait()  # sincroniza: ambas as threads partem ao mesmo tempo
+            result = config.verify_totp_or_backup(code)
+            with lock:
+                results.append(result)
+            # Fecha a conexão da thread para não vazar handles
+            _conn.close()
+
+        t1 = threading.Thread(target=attempt)
+        t2 = threading.Thread(target=attempt)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        self.assertEqual(len(results), 2, "Ambas as threads devem terminar dentro do timeout")
+        self.assertEqual(
+            results.count(True), 1,
+            f"FALHA: {results.count(True)} thread(s) retornaram True. "
+            f"Esperado: exatamente 1. Results: {results}"
+        )
+
+    def test_stale_object_replay_blocked_by_atomic_update(self):
+        """
+        Isola o mecanismo do exclude(): um objeto stale em memória
+        (last_otp_counter desatualizado) não consegue aceitar um código já usado.
+        Este teste verifica o exclude() independente de qualquer banco.
+        """
         code = pyotp.TOTP(self.config.secret).now()
 
-        # Primeira verificação: deve passar
         result1 = self.config.verify_totp_or_backup(code)
         self.assertTrue(result1, "Primeira verificação deve passar")
 
-        # Simula race: segundo objeto carregado ANTES do update do primeiro request.
-        # Em concorrência real, ambos leram last_otp_counter=-1 antes de qualquer update.
+        # Carrega objeto stale simulando leitura antes do update do 1º request (TOCTOU)
         config_stale = TwoFactorConfig.objects.get(pk=self.config.pk)
-        config_stale.last_otp_counter = -1  # simula estado pré-update (TOCTOU)
+        config_stale.last_otp_counter = -1
 
-        # Com o update atômico (exclude), o banco já tem last_otp_counter=matched_counter.
-        # Mesmo com o objeto stale em memória, o UPDATE retorna 0 rows → False.
         result2 = config_stale.verify_totp_or_backup(code)
         self.assertFalse(
             result2,
-            "FALHA DE SEGURANÇA: update atômico não impediu replay em race condition!"
+            "FALHA: exclude() não bloqueou objeto com last_otp_counter stale!"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. Rotação de chave de criptografia — teste direto da lógica da migration
+# ---------------------------------------------------------------------------
+
+@override_settings(TOTP_ENCRYPTION_KEY=_TEST_ENCRYPTION_KEY)
+class KeyRotationMigrationTest(TestCase):
+    """Testa rotate_key_forward da migration 0009 diretamente, sem passar pelo migrate."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_rotate_key_forward_re_encrypts_correctly(self):
+        """
+        Grava secret criptografado com OLD_KEY no banco via SQL, chama
+        rotate_key_forward diretamente e confirma que o resultado descriptografa
+        com a nova chave.
+        """
+        import importlib
+        import os
+        from unittest.mock import MagicMock, patch
+        from cryptography.fernet import Fernet
+        from django.db import connection
+
+        # Importa o módulo de migration via importlib (nome começa com dígito)
+        migration_mod = importlib.import_module(
+            'apps.users.migrations.0009_rotate_totp_encryption_key'
+        )
+
+        OLD_KEY = 'YNqvfjrYdzvwqJQQiHQCV_-2eeWNfya4UAHsxiNdNwU='
+        NEW_KEY = Fernet.generate_key().decode()
+
+        plaintext_secret = pyotp.random_base32()
+        old_fernet = Fernet(OLD_KEY.encode())
+        encrypted_with_old = old_fernet.encrypt(plaintext_secret.encode()).decode()
+
+        # Cria o config com placeholder (será sobrescrito via SQL)
+        user = _make_user('keyrotation@test.com')
+        config = TwoFactorConfig.objects.create(
+            user=user, secret=pyotp.random_base32(), is_active=True, backup_codes=[],
+        )
+
+        # Sobrescreve o secret com o valor criptografado pela OLD_KEY
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'UPDATE configs_2fa SET tfa_secret = %s WHERE tfa_id = %s',
+                [encrypted_with_old, config.pk],
+            )
+
+        # Confirma que o valor foi gravado corretamente
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT tfa_secret FROM configs_2fa WHERE tfa_id = %s', [config.pk])
+            raw_before = cursor.fetchone()[0]
+        self.assertEqual(raw_before, encrypted_with_old, 'Setup: valor não foi gravado via SQL')
+
+        # Mock do schema_editor apontando para a conexão real de teste
+        mock_editor = MagicMock()
+        mock_editor.connection = connection
+
+        # Executa a lógica de rotação com TOTP_OLD_ENCRYPTION_KEY via env e NEW_KEY via settings
+        with patch.dict(os.environ, {'TOTP_OLD_ENCRYPTION_KEY': OLD_KEY}):
+            with self.settings(TOTP_ENCRYPTION_KEY=NEW_KEY):
+                migration_mod.rotate_key_forward(None, mock_editor)
+
+        # Lê o valor rotacionado
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT tfa_secret FROM configs_2fa WHERE tfa_id = %s', [config.pk])
+            raw_after = cursor.fetchone()[0]
+
+        self.assertNotEqual(raw_after, encrypted_with_old, 'Valor não foi rotacionado no banco')
+
+        # Descriptografa com a nova chave e confirma equivalência com o plaintext original
+        new_fernet = Fernet(NEW_KEY.encode())
+        decrypted = new_fernet.decrypt(raw_after.encode()).decode()
+        self.assertEqual(
+            decrypted, plaintext_secret,
+            f'Plaintext diverge após rotação! Esperado: {plaintext_secret!r}, obtido: {decrypted!r}'
+        )
+
+
+# ---------------------------------------------------------------------------
+# 13. Blacklist de tokens ao ATIVAR 2FA
+# ---------------------------------------------------------------------------
+
+@override_settings(TOTP_ENCRYPTION_KEY=_TEST_ENCRYPTION_KEY)
+class BlacklistOnTwoFactorActivateTest(TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.user = _make_user('blacklist_activate@test.com')
+        self.client = APIClient()
+
+    def test_activate_2fa_blacklists_refresh_tokens(self):
+        """Ativar 2FA invalida todos os refresh tokens existentes."""
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        # Emite refresh token ANTES de ativar 2FA
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        # Inicia o setup (GET retorna secret + URI)
+        r_setup = self.client.get('/api/auth/2fa/setup/')
+        self.assertEqual(r_setup.status_code, 200, f'Setup falhou: {r_setup.data}')
+        secret = r_setup.data['secret']
+
+        # Confirma com código TOTP válido — ativa 2FA e blacklista tokens
+        code = pyotp.TOTP(secret).now()
+        r_confirm = self.client.post('/api/auth/2fa/setup/confirm/', {'code': code}, format='json')
+        self.assertEqual(r_confirm.status_code, 200, f'Confirm falhou: {r_confirm.data}')
+
+        # Verifica que o refresh token emitido ANTES da ativação está no blacklist
+        jti = refresh.payload['jti']
+        self.assertTrue(
+            BlacklistedToken.objects.filter(token__jti=jti).exists(),
+            'FALHA: refresh token não foi blacklistado após ativar 2FA!'
         )
