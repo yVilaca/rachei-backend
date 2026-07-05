@@ -89,8 +89,10 @@ class CustomTokenObtainPairView(BaseTokenObtainPairView):
                  detail={'email': str(request.data.get('email', ''))[:100]})
             raise
         if 'refresh' in response.data:
+            # Login completo — sem 2FA ou trusted device aceito
             _set_refresh_cookie(response, response.data.pop('refresh'))
-        _log(request, AuditLog.LOGIN_OK)
+            _log(request, AuditLog.LOGIN_OK)
+        # 2FA pendente: não loga LOGIN_OK — TOTP_OK será registrado após o challenge
         return response
 
 
@@ -347,6 +349,7 @@ class TwoFactorRegenerateBackupCodesView(APIView):
         try:
             verified = config.verify_totp_or_backup(code)
         except TOTPLocked:
+            _log(request, AuditLog.TOTP_LOCKED, user=request.user)
             raise ValidationError({'detail': 'Muitas tentativas incorretas. Aguarde alguns minutos e tente novamente.'})
 
         if not verified:
@@ -393,10 +396,11 @@ class TwoFactorChallengeView(APIView):
         try:
             verified = config.verify_totp_or_backup(code)
         except TOTPLocked:
+            _log(request, AuditLog.TOTP_LOCKED, user=user)
             raise ValidationError({'detail': 'Muitas tentativas incorretas. Aguarde alguns minutos e tente novamente.'})
 
         if not verified:
-            _log(request, AuditLog.TOTP_FAIL)
+            _log(request, AuditLog.TOTP_FAIL, user=user)
             raise ValidationError({'code': ['Código inválido.']})
 
         refresh = RefreshToken.for_user(user)
@@ -449,6 +453,7 @@ class TwoFactorDisableView(APIView):
         try:
             verified = config.verify_totp_or_backup(code)
         except TOTPLocked:
+            _log(request, AuditLog.TOTP_LOCKED, user=request.user)
             raise ValidationError({'detail': 'Muitas tentativas incorretas. Aguarde alguns minutos e tente novamente.'})
 
         if not verified:
