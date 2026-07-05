@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 
 from apps.debts.models import Debt, Installment
 from apps.users.models import NotificacaoLida
+from apps.users.throttles import PublicPageRateThrottle
 from .models import ChargeLink, Comprovante
 from .serializers import (
     ComprovanteDetailSerializer,
@@ -22,7 +23,11 @@ def _get_parcela(parcela_id, user):
         return (
             Installment.objects
             .select_related('debt__paid_by', 'debt__group', 'debtor')
-            .get(pk=parcela_id, debt__group__members__user=user)
+            .get(
+                pk=parcela_id,
+                debt__group__members__user=user,
+                debt__group__members__status='ativo',
+            )
         )
     except Installment.DoesNotExist:
         raise NotFound('Parcela não encontrada.')
@@ -82,6 +87,7 @@ class PagamentoPublicoView(generics.RetrieveAPIView):
     Registra used_at na primeira visita.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [PublicPageRateThrottle]
     serializer_class = PagamentoPublicoSerializer
     lookup_field = 'token'
 
@@ -219,6 +225,8 @@ class MarcarLidaView(APIView):
         evento_ids = request.data.get('evento_ids', [])
         if not isinstance(evento_ids, list):
             raise ValidationError({'evento_ids': 'Deve ser uma lista de strings.'})
+        if len(evento_ids) > 50:
+            raise ValidationError({'evento_ids': 'Máximo de 50 IDs por chamada.'})
 
         validos = [e for e in evento_ids if isinstance(e, str) and len(e) <= 60]
         NotificacaoLida.objects.bulk_create(

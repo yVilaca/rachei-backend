@@ -18,7 +18,7 @@ def criar_despesa(*, grupo, paid_by, created_by, description, total_amount_cents
     """
     member_ids = set(
         GroupMember.objects
-        .filter(group=grupo)
+        .filter(group=grupo, status=GroupMember.STATUS_ATIVO)
         .values_list('user_id', flat=True)
     )
     if paid_by.pk not in member_ids:

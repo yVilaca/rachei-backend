@@ -5,7 +5,7 @@ from .models import GroupMember
 
 class IsGroupMember(BasePermission):
     """
-    Permite acesso somente se request.user for membro do grupo.
+    Permite acesso somente se request.user for membro ATIVO do grupo.
 
     Projetada para uso explícito via check_object_permissions(request, grupo)
     em APIViews — has_object_permission NÃO é chamado automaticamente fora
@@ -14,12 +14,16 @@ class IsGroupMember(BasePermission):
     message = 'Você não é membro deste grupo.'
 
     def has_object_permission(self, request, view, obj):
-        return GroupMember.objects.filter(group=obj, user=request.user).exists()
+        return GroupMember.objects.filter(
+            group=obj,
+            user=request.user,
+            status=GroupMember.STATUS_ATIVO,
+        ).exists()
 
 
 class IsGroupAdmin(BasePermission):
     """
-    Permite acesso somente se request.user for administrador do grupo.
+    Permite acesso somente se request.user for administrador ATIVO do grupo.
 
     Mesma observação: chamar check_object_permissions(request, grupo)
     explicitamente em APIViews.
@@ -28,5 +32,8 @@ class IsGroupAdmin(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         return GroupMember.objects.filter(
-            group=obj, user=request.user, role=GroupMember.ROLE_ADMIN,
+            group=obj,
+            user=request.user,
+            role=GroupMember.ROLE_ADMIN,
+            status=GroupMember.STATUS_ATIVO,
         ).exists()

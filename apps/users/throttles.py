@@ -14,3 +14,8 @@ class LoginRateThrottle(AnonRateThrottle):
 class PasswordResetRateThrottle(AnonRateThrottle):
     """3 tentativas/minuto por IP — previne spam em password reset."""
     scope = 'password_reset'
+
+
+class PublicPageRateThrottle(AnonRateThrottle):
+    """60 requisições/minuto por IP — páginas públicas de pagamento."""
+    scope = 'public_page'

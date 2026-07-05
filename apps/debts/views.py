@@ -1,12 +1,14 @@
 from rest_framework import generics, status
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.groups.models import Group, GroupMember
 from .models import Debt, Installment
 
-_grupos_do_user = lambda user: GroupMember.objects.filter(user=user).values('group_id')
+_grupos_do_user = lambda user: GroupMember.objects.filter(
+    user=user, status=GroupMember.STATUS_ATIVO
+).values('group_id')
 from .serializers import (
     DespesaDetailSerializer,
     DespesaFormSerializer,
@@ -16,20 +18,23 @@ from .serializers import (
 from .services import criar_despesa
 
 
-def _verificar_membro(grupo_id, user):
-    if not GroupMember.objects.filter(group_id=grupo_id, user=user).exists():
-        raise PermissionDenied('Você não é membro deste grupo.')
-
-
 class DespesasPorGrupoView(generics.ListAPIView):
     """GET /api/grupos/{grupo_pk}/despesas/ — despesas de um grupo."""
     serializer_class = DespesaListSerializer
 
     def get_queryset(self):
-        _verificar_membro(self.kwargs['grupo_pk'], self.request.user)
+        grupo_pk = self.kwargs['grupo_pk']
+        # 404 para outsiders e inativos — esconde existência do grupo
+        grupo = Group.objects.filter(
+            pk=grupo_pk,
+            members__user=self.request.user,
+            members__status=GroupMember.STATUS_ATIVO,
+        ).first()
+        if not grupo:
+            raise NotFound('Grupo não encontrado.')
         return (
             Debt.objects
-            .filter(group_id=self.kwargs['grupo_pk'])
+            .filter(group=grupo)
             .select_related('paid_by')
             .order_by('-created_at')
         )
@@ -44,7 +49,9 @@ class DespesaCreateView(APIView):
         data = serializer.validated_data
 
         grupo = Group.objects.filter(
-            pk=data['grupo_id'], members__user=request.user
+            pk=data['grupo_id'],
+            members__user=request.user,
+            members__status=GroupMember.STATUS_ATIVO,
         ).first()
         if not grupo:
             raise NotFound('Grupo não encontrado.')
