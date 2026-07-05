@@ -167,3 +167,11 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Rachei <noreply@rachei.app
 # Gere com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 # Sem esta variável, qualquer operação 2FA lança ImproperlyConfigured (ver apps/users/fields.py).
 TOTP_ENCRYPTION_KEY = os.getenv('TOTP_ENCRYPTION_KEY', '')
+
+# SMS
+# Em dev: ConsoleSmsBackend (imprime no terminal)
+# Em prod: setar SMS_BACKEND=apps.users.sms.TwilioSmsBackend + credenciais Twilio
+SMS_BACKEND = os.getenv('SMS_BACKEND', 'apps.users.sms.ConsoleSmsBackend')
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
+TWILIO_FROM = os.getenv('TWILIO_FROM', '')

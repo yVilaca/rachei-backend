@@ -44,7 +44,8 @@ class User(AbstractUser):
         max_length=10, choices=PLAN_CHOICES, default=PLAN_FREE,
         db_column='usr_plano',
     )
-    phone = models.CharField(max_length=20, blank=True, db_column='usr_telefone')
+    phone = models.CharField(max_length=20, blank=True, null=True, unique=True, db_column='usr_telefone')
+    phone_verified = models.BooleanField(default=False, db_column='usr_tel_verificado')
     avatar_url = models.URLField(blank=True, db_column='usr_avatar_url')
     notif_cobracas = models.BooleanField(default=True, db_column='usr_notif_cobracas')
     notif_confirmacoes = models.BooleanField(default=True, db_column='usr_notif_confirmacoes')
@@ -248,6 +249,49 @@ class PasswordResetCode(models.Model):
             self.save(update_fields=['used'])
             return True
         PasswordResetCode.objects.filter(pk=self.pk).update(attempts=models.F('attempts') + 1)
+        return False
+
+
+class SmsVerification(models.Model):
+    MAX_ATTEMPTS = 5
+    CODE_TTL_MINUTES = 10
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='sms_verification',
+        db_column='sms_usuario_id',
+    )
+    code_hash = models.CharField(max_length=64, db_column='sms_code_hash')
+    expires_at = models.DateTimeField(db_column='sms_expires_at')
+    used = models.BooleanField(default=False, db_column='sms_usado')
+    attempts = models.PositiveSmallIntegerField(default=0, db_column='sms_tentativas')
+    created_at = models.DateTimeField(auto_now_add=True, db_column='sms_criado_em')
+
+    class Meta:
+        db_table = 'verificacoes_sms'
+
+    @classmethod
+    def generate(cls, user) -> str:
+        cls.objects.filter(user=user).delete()
+        code = f'{secrets.randbelow(1_000_000):06d}'
+        cls.objects.create(
+            user=user,
+            code_hash=hashlib.sha256(code.encode()).hexdigest(),
+            expires_at=timezone.now() + timedelta(minutes=cls.CODE_TTL_MINUTES),
+        )
+        return code
+
+    def is_valid(self) -> bool:
+        return not self.used and self.attempts < self.MAX_ATTEMPTS and self.expires_at > timezone.now()
+
+    def verify_and_consume(self, code: str) -> bool:
+        submitted = hashlib.sha256(code.encode()).hexdigest()
+        if secrets.compare_digest(self.code_hash, submitted):
+            self.used = True
+            self.save(update_fields=['used'])
+            return True
+        SmsVerification.objects.filter(pk=self.pk).update(attempts=models.F('attempts') + 1)
         return False
 
 

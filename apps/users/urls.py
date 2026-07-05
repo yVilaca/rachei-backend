@@ -5,6 +5,7 @@ from .views import (
     LogoutView,
     MeView,
     RegisterView,
+    ResendSmsView,
     ResetPasswordView,
     TrustedDeviceDeleteView,
     TrustedDeviceListView,
@@ -14,12 +15,15 @@ from .views import (
     TwoFactorSetupConfirmView,
     TwoFactorSetupView,
     TwoFactorStatusView,
+    VerifyPhoneView,
 )
 
 app_name = 'users'
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
+    path('phone/verify/', VerifyPhoneView.as_view(), name='phone_verify'),
+    path('phone/resend/', ResendSmsView.as_view(), name='phone_resend'),
     path('me/', MeView.as_view(), name='me'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('password/forgot/', ForgotPasswordView.as_view(), name='password_forgot'),

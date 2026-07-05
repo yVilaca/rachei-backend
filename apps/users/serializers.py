@@ -1,4 +1,5 @@
 import hashlib
+import re
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -31,22 +32,22 @@ class UserDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = (
-            'id', 'name', 'email', 'phone', 'avatar_url', 'plan',
+            'id', 'name', 'email', 'phone', 'phone_verified', 'avatar_url', 'plan',
             'notif_cobracas', 'notif_confirmacoes', 'notif_lembretes',
             'date_joined',
         )
-        read_only_fields = ('id', 'plan', 'date_joined')
+        read_only_fields = ('id', 'plan', 'date_joined', 'phone_verified')
 
     def get_name(self, obj):
         return obj.get_full_name() or obj.username
 
 
 class UserFormSerializer(serializers.ModelSerializer):
-    """Atualização de perfil — apenas campos editáveis."""
+    """Atualização de perfil — apenas campos editáveis (phone excluído: requer re-verificação)."""
 
     class Meta:
         model = User
-        fields = ('phone', 'avatar_url', 'notif_cobracas', 'notif_confirmacoes', 'notif_lembretes')
+        fields = ('avatar_url', 'notif_cobracas', 'notif_confirmacoes', 'notif_lembretes')
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -95,9 +96,13 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return {'requires_2fa': True, 'pending_token': str(pending)}
 
 
+_E164_RE = re.compile(r'^\+\d{8,15}$')
+
+
 class RegisterSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=150)
     email = serializers.EmailField()
+    phone = serializers.CharField(max_length=20)
     password = serializers.CharField(min_length=8, write_only=True)
 
     def validate_email(self, value):
@@ -106,12 +111,24 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError('Email já cadastrado.')
         return value
 
+    def validate_phone(self, value):
+        value = value.strip()
+        if not _E164_RE.match(value):
+            raise serializers.ValidationError(
+                'Telefone deve estar no formato E.164 (ex: +5511999999999).'
+            )
+        if User.objects.filter(phone=value).exists():
+            raise serializers.ValidationError('Telefone já cadastrado.')
+        return value
+
     def create(self, validated_data):
         parts = validated_data['name'].strip().split(' ', 1)
         return User.objects.create_user(
             username=validated_data['email'],
             email=validated_data['email'],
             password=validated_data['password'],
+            phone=validated_data['phone'],
+            phone_verified=False,
             first_name=parts[0],
             last_name=parts[1] if len(parts) > 1 else '',
         )

@@ -19,7 +19,8 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView as BaseTokenObtainPairView
 
-from .models import AuditLog, PasswordResetCode, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
+from .models import AuditLog, PasswordResetCode, SmsVerification, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
+from .sms import send_sms
 from .serializers import (
     CustomTokenObtainPairSerializer,
     RegisterSerializer,
@@ -70,6 +71,41 @@ def _log(request, event: str, user=None, detail: dict | None = None) -> None:
     except Exception:
         pass  # audit nunca quebra o fluxo principal
 
+def _send_verification_sms(user) -> None:
+    try:
+        code = SmsVerification.generate(user)
+        send_sms(
+            user.phone,
+            f'Rachei: seu código de verificação é {code}. Válido por {SmsVerification.CODE_TTL_MINUTES} minutos.',
+        )
+    except Exception:
+        pass  # nunca bloqueia o cadastro
+
+
+def _link_pending_contacts(user) -> list:
+    """Ao verificar o telefone, migra ContatoPendente → GroupMember(pendente_confirmacao)."""
+    from apps.groups.models import ContatoPendente, GroupMember
+    contatos = list(
+        ContatoPendente.objects
+        .filter(phone=user.phone)
+        .prefetch_related('group_memberships__group')
+    )
+    pending_groups = []
+    for contato in contatos:
+        for membership in contato.group_memberships.all():
+            membership.user = user
+            membership.contato_pendente = None
+            membership.status = GroupMember.STATUS_PENDENTE_CONFIRMACAO
+            membership.save(update_fields=['user', 'contato_pendente', 'status'])
+            pending_groups.append({
+                'id': str(membership.group.id),
+                'name': membership.group.name,
+                'emoji': membership.group.emoji,
+            })
+        contato.delete()
+    return pending_groups
+
+
 _NEUTRAL_FORGOT = 'Se esse e-mail estiver cadastrado, você receberá um código em breve.'
 _INVALID_CODE = {'code': ['Código inválido ou expirado.']}
 
@@ -97,7 +133,7 @@ class CustomTokenObtainPairView(BaseTokenObtainPairView):
 
 
 class RegisterView(generics.CreateAPIView):
-    """POST /api/auth/register/ — cria conta e retorna tokens JWT."""
+    """POST /api/auth/register/ — cria conta, envia OTP SMS e retorna tokens JWT."""
     permission_classes = [permissions.AllowAny]
     throttle_classes = [AuthRateThrottle]
     serializer_class = RegisterSerializer
@@ -106,14 +142,54 @@ class RegisterView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        _send_verification_sms(user)
         refresh = RefreshToken.for_user(user)
         refresh['plan'] = user.plan
         response = Response({
             'access': str(refresh.access_token),
             'user': UserDetailSerializer(user).data,
+            'phone_verification_required': True,
         }, status=status.HTTP_201_CREATED)
         _set_refresh_cookie(response, str(refresh))
         return response
+
+
+class VerifyPhoneView(APIView):
+    """POST /api/auth/phone/verify/ — verifica OTP enviado por SMS."""
+    throttle_classes = [AuthRateThrottle]
+
+    def post(self, request):
+        code = (request.data.get('code') or '').strip()
+        if not code:
+            raise ValidationError({'code': ['Campo obrigatório.']})
+
+        verification = SmsVerification.objects.filter(user=request.user).first()
+        if not verification or not verification.is_valid():
+            raise ValidationError({'detail': 'Código inválido ou expirado.'})
+
+        if not verification.verify_and_consume(code):
+            raise ValidationError({'code': ['Código inválido.']})
+
+        request.user.phone_verified = True
+        request.user.save(update_fields=['phone_verified'])
+
+        pending_groups = _link_pending_contacts(request.user)
+
+        return Response({
+            'detail': 'Telefone verificado com sucesso.',
+            'pending_groups': pending_groups,
+        })
+
+
+class ResendSmsView(APIView):
+    """POST /api/auth/phone/resend/ — reenvia OTP SMS."""
+    throttle_classes = [PasswordResetRateThrottle]
+
+    def post(self, request):
+        if request.user.phone_verified:
+            return Response({'detail': 'Telefone já verificado.'}, status=status.HTTP_400_BAD_REQUEST)
+        _send_verification_sms(request.user)
+        return Response({'detail': 'Código reenviado.'})
 
 
 class LogoutView(APIView):

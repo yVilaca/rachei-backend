@@ -1,25 +1,36 @@
 from django.db.models import Count, Prefetch
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from .models import Group, GroupMember
+from .models import ContatoPendente, Group, GroupMember
 from .permissions import IsGroupAdmin, IsGroupMember
 from .serializers import (
+    AdicionarMembroSerializer,
     GrupoDetailSerializer,
     GrupoFormSerializer,
     GrupoListSerializer,
-    MembroFormSerializer,
     MembroListSerializer,
 )
 
 
 def _get_grupo(grupo_id, user, require_admin=False):
-    """Retorna o grupo se o user for membro (e opcionalmente admin)."""
+    """Retorna grupo se o user for membro ativo (e opcionalmente admin). 404 caso contrário."""
     if require_admin:
-        filter_kwargs = {'members__user': user, 'members__role': GroupMember.ROLE_ADMIN}
+        filter_kwargs = {
+            'members__user': user,
+            'members__role': GroupMember.ROLE_ADMIN,
+            'members__status': GroupMember.STATUS_ATIVO,
+        }
     else:
-        filter_kwargs = {'members__user': user}
+        filter_kwargs = {
+            'members__user': user,
+            'members__status__in': [
+                GroupMember.STATUS_ATIVO,
+                GroupMember.STATUS_PENDENTE_CONFIRMACAO,
+            ],
+        }
     grupo = Group.objects.filter(pk=grupo_id, **filter_kwargs).first()
     if not grupo:
         raise NotFound('Grupo não encontrado.')
@@ -28,7 +39,7 @@ def _get_grupo(grupo_id, user, require_admin=False):
 
 class GrupoListCreateView(generics.ListCreateAPIView):
     """
-    GET  /api/grupos/ — lista grupos do usuário autenticado
+    GET  /api/grupos/ — lista grupos do usuário autenticado (apenas ativos)
     POST /api/grupos/ — cria novo grupo (criador vira admin automaticamente)
     """
 
@@ -38,7 +49,10 @@ class GrupoListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return (
             Group.objects
-            .filter(members__user=self.request.user)
+            .filter(
+                members__user=self.request.user,
+                members__status=GroupMember.STATUS_ATIVO,
+            )
             .annotate(member_count=Count('members', distinct=True))
             .order_by('archived', '-created_at')
         )
@@ -47,14 +61,18 @@ class GrupoListCreateView(generics.ListCreateAPIView):
         serializer = GrupoFormSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         group = serializer.save(created_by=request.user)
-        GroupMember.objects.create(group=group, user=request.user, role=GroupMember.ROLE_ADMIN)
+        GroupMember.objects.create(
+            group=group, user=request.user,
+            role=GroupMember.ROLE_ADMIN, status=GroupMember.STATUS_ATIVO,
+            adicionado_por=request.user,
+        )
         return Response(GrupoDetailSerializer(group).data, status=status.HTTP_201_CREATED)
 
 
 class GrupoDetailView(generics.RetrieveUpdateAPIView):
     """
     GET   /api/grupos/{id}/ — detalhe do grupo com membros
-    PATCH /api/grupos/{id}/ — editar (somente admins)
+    PATCH /api/grupos/{id}/ — editar (somente admins ativos)
     """
     http_method_names = ['get', 'patch']
 
@@ -63,15 +81,28 @@ class GrupoDetailView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         if self.request.method == 'PATCH':
-            member_filter = {'members__user': self.request.user, 'members__role': GroupMember.ROLE_ADMIN}
+            member_filter = {
+                'members__user': self.request.user,
+                'members__role': GroupMember.ROLE_ADMIN,
+                'members__status': GroupMember.STATUS_ATIVO,
+            }
         else:
-            member_filter = {'members__user': self.request.user}
+            member_filter = {
+                'members__user': self.request.user,
+                'members__status__in': [
+                    GroupMember.STATUS_ATIVO,
+                    GroupMember.STATUS_PENDENTE_CONFIRMACAO,
+                ],
+            }
         grupo = (
             Group.objects
             .filter(pk=self.kwargs['pk'], **member_filter)
             .select_related('created_by')
             .prefetch_related(
-                Prefetch('members', queryset=GroupMember.objects.select_related('user'))
+                Prefetch(
+                    'members',
+                    queryset=GroupMember.objects.select_related('user', 'contato_pendente'),
+                )
             )
             .first()
         )
@@ -83,17 +114,16 @@ class GrupoDetailView(generics.RetrieveUpdateAPIView):
 class MembroListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/grupos/{grupo_pk}/membros/ — lista membros
-    POST /api/grupos/{grupo_pk}/membros/ — adiciona membro (somente admins)
+    POST /api/grupos/{grupo_pk}/membros/ — adiciona membro por telefone (somente admins)
     """
 
     def get_permissions(self):
-        # POST exige admin; GET basta ser membro (filtrado pelo queryset)
         if self.request.method == 'POST':
             return [permissions.IsAuthenticated(), IsGroupAdmin()]
         return super().get_permissions()
 
     def get_serializer_class(self):
-        return MembroFormSerializer if self.request.method == 'POST' else MembroListSerializer
+        return AdicionarMembroSerializer if self.request.method == 'POST' else MembroListSerializer
 
     def _grupo_cached(self):
         if not hasattr(self, '_grupo'):
@@ -110,38 +140,148 @@ class MembroListCreateView(generics.ListCreateAPIView):
         return (
             GroupMember.objects
             .filter(group=grupo)
-            .select_related('user')
+            .select_related('user', 'contato_pendente')
             .order_by('joined_at')
         )
 
-    def perform_create(self, serializer):
+    def create(self, request, *args, **kwargs):
         grupo = self._grupo_cached()
-        # has_object_permission não é chamado automaticamente em ListCreateAPIView
-        # (get_object() não é invocado no fluxo de criação).
-        self.check_object_permissions(self.request, grupo)
-        serializer.save(group=grupo)
+        self.check_object_permissions(request, grupo)
+
+        serializer = AdicionarMembroSerializer(
+            data=request.data,
+            context={'group': grupo, 'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+        vd = serializer.validated_data
+
+        resolved_user = vd.get('_resolved_user')
+        resolved_contato = vd.get('_resolved_contato')
+        phone = vd['phone']
+        role = vd.get('role', GroupMember.ROLE_MEMBER)
+
+        if resolved_user:
+            # Usuário já cadastrado → entra como ativo imediatamente
+            member = GroupMember.objects.create(
+                group=grupo,
+                user=resolved_user,
+                role=role,
+                status=GroupMember.STATUS_ATIVO,
+                adicionado_por=request.user,
+            )
+        elif resolved_contato:
+            # Contato pendente já existe → reutiliza
+            member = GroupMember.objects.create(
+                group=grupo,
+                contato_pendente=resolved_contato,
+                role=role,
+                status=GroupMember.STATUS_PENDENTE_REGISTRO,
+                adicionado_por=request.user,
+            )
+        else:
+            # Novo contato → cria ContatoPendente
+            name = vd['name'].strip()
+            contato = ContatoPendente.objects.create(
+                phone=phone,
+                name=name,
+                criado_por=request.user,
+            )
+            member = GroupMember.objects.create(
+                group=grupo,
+                contato_pendente=contato,
+                role=role,
+                status=GroupMember.STATUS_PENDENTE_REGISTRO,
+                adicionado_por=request.user,
+            )
+
+        return Response(
+            MembroListSerializer(member).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class MembroDestroyView(generics.DestroyAPIView):
-    """DELETE /api/grupos/{grupo_pk}/membros/{user_pk}/ — remove membro (somente admins)."""
+    """DELETE /api/grupos/{grupo_pk}/membros/{member_pk}/ — remove membro (somente admins)."""
 
     permission_classes = [permissions.IsAuthenticated, IsGroupAdmin]
 
     def get_object(self):
-        # Passo 1: 404 se não é membro (esconde existência do grupo para outsiders)
         grupo = _get_grupo(self.kwargs['grupo_pk'], self.request.user, require_admin=False)
-        # Passo 2: 403 se é membro mas não é admin
         self.check_object_permissions(self.request, grupo)
         try:
-            return GroupMember.objects.get(group=grupo, user_id=self.kwargs['user_pk'])
+            return GroupMember.objects.get(pk=self.kwargs['member_pk'], group=grupo)
         except GroupMember.DoesNotExist:
             raise NotFound('Membro não encontrado.')
 
     def perform_destroy(self, instance):
-        if instance.role == GroupMember.ROLE_ADMIN:
+        if instance.role == GroupMember.ROLE_ADMIN and instance.user:
             outros_admins = GroupMember.objects.filter(
-                group=instance.group, role=GroupMember.ROLE_ADMIN
+                group=instance.group,
+                role=GroupMember.ROLE_ADMIN,
+                status=GroupMember.STATUS_ATIVO,
             ).exclude(pk=instance.pk).exists()
             if not outros_admins:
                 raise ValidationError('Não é possível remover o único administrador do grupo.')
         instance.delete()
+
+
+class GruposPendentesView(APIView):
+    """GET /api/me/grupos-pendentes/ — grupos aguardando confirmação do usuário."""
+
+    def get(self, request):
+        memberships = (
+            GroupMember.objects
+            .filter(user=request.user, status=GroupMember.STATUS_PENDENTE_CONFIRMACAO)
+            .select_related('group', 'adicionado_por')
+        )
+        data = []
+        for m in memberships:
+            adicionado_por = None
+            if m.adicionado_por:
+                adicionado_por = {
+                    'id': m.adicionado_por.id,
+                    'name': m.adicionado_por.get_full_name() or m.adicionado_por.username,
+                }
+            data.append({
+                'membership_id': m.id,
+                'group': {
+                    'id': str(m.group.id),
+                    'name': m.group.name,
+                    'emoji': m.group.emoji,
+                },
+                'adicionado_por': adicionado_por,
+            })
+        return Response(data)
+
+
+class ConfirmarParticipacaoView(APIView):
+    """POST /api/grupos/{grupo_pk}/confirmar/ — confirma ou nega participação no grupo."""
+
+    def post(self, request, grupo_pk):
+        aceitar = request.data.get('aceitar')
+        if aceitar is None:
+            raise ValidationError({'aceitar': ['Campo obrigatório (true ou false).']})
+
+        membership = (
+            GroupMember.objects
+            .filter(
+                group_id=grupo_pk,
+                user=request.user,
+                status__in=[
+                    GroupMember.STATUS_PENDENTE_CONFIRMACAO,
+                    GroupMember.STATUS_ATIVO,
+                ],
+            )
+            .first()
+        )
+        if not membership:
+            raise NotFound('Participação não encontrada.')
+
+        if aceitar:
+            membership.status = GroupMember.STATUS_ATIVO
+            membership.save(update_fields=['status'])
+            return Response({'detail': 'Participação confirmada.'})
+        else:
+            membership.status = GroupMember.STATUS_INATIVO
+            membership.save(update_fields=['status'])
+            return Response({'detail': 'Participação negada.'})
