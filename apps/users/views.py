@@ -13,20 +13,62 @@ from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView as BaseTokenObtainPairView
 
-from .models import PasswordResetCode, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
+from .models import AuditLog, PasswordResetCode, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
 from .serializers import (
     CustomTokenObtainPairSerializer,
     RegisterSerializer,
     UserDetailSerializer,
     UserFormSerializer,
 )
-from .throttles import AuthRateThrottle
+from .throttles import AuthRateThrottle, LoginRateThrottle, PasswordResetRateThrottle
 from .tokens import TwoFAPendingToken
+
+# ---------------------------------------------------------------------------
+# Cookie helpers — refresh token HttpOnly
+# ---------------------------------------------------------------------------
+
+REFRESH_COOKIE_NAME = 'rachei_refresh'
+_REFRESH_MAX_AGE = int(django_settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
+
+
+def _get_ip(request) -> str:
+    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    return (forwarded.split(',')[0].strip() or request.META.get('REMOTE_ADDR')) or ''
+
+
+def _set_refresh_cookie(response, token: str) -> None:
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        max_age=_REFRESH_MAX_AGE,
+        httponly=True,
+        secure=not django_settings.DEBUG,
+        samesite='Strict',
+        path='/api/auth/',
+    )
+
+
+def _clear_refresh_cookie(response) -> None:
+    response.delete_cookie(key=REFRESH_COOKIE_NAME, path='/api/auth/')
+
+
+def _log(request, event: str, user=None, detail: dict | None = None) -> None:
+    try:
+        AuditLog.objects.create(
+            user=user,
+            event=event,
+            ip=_get_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')[:256],
+            detail=detail or {},
+        )
+    except Exception:
+        pass  # audit nunca quebra o fluxo principal
 
 _NEUTRAL_FORGOT = 'Se esse e-mail estiver cadastrado, você receberá um código em breve.'
 _INVALID_CODE = {'code': ['Código inválido ou expirado.']}
@@ -36,8 +78,20 @@ User = get_user_model()
 
 class CustomTokenObtainPairView(BaseTokenObtainPairView):
     """POST /api/auth/login/ — autentica e retorna tokens + dados do usuário."""
-    throttle_classes = [AuthRateThrottle]
+    throttle_classes = [LoginRateThrottle]
     serializer_class = CustomTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        try:
+            response = super().post(request, *args, **kwargs)
+        except Exception:
+            _log(request, AuditLog.LOGIN_FAIL,
+                 detail={'email': str(request.data.get('email', ''))[:100]})
+            raise
+        if 'refresh' in response.data:
+            _set_refresh_cookie(response, response.data.pop('refresh'))
+        _log(request, AuditLog.LOGIN_OK)
+        return response
 
 
 class RegisterView(generics.CreateAPIView):
@@ -52,28 +106,53 @@ class RegisterView(generics.CreateAPIView):
         user = serializer.save()
         refresh = RefreshToken.for_user(user)
         refresh['plan'] = user.plan
-        return Response({
+        response = Response({
             'access': str(refresh.access_token),
-            'refresh': str(refresh),
             'user': UserDetailSerializer(user).data,
         }, status=status.HTTP_201_CREATED)
+        _set_refresh_cookie(response, str(refresh))
+        return response
 
 
 class LogoutView(APIView):
-    """POST /api/auth/logout/ — invalida o refresh token (blacklist)."""
+    """POST /api/auth/logout/ — invalida o refresh token do cookie e o limpa."""
 
     def post(self, request):
-        refresh_token = request.data.get('refresh')
-        if not refresh_token:
-            raise ValidationError({'refresh': 'Campo obrigatório.'})
+        refresh_str = request.COOKIES.get(REFRESH_COOKIE_NAME)
+        if refresh_str:
+            try:
+                token = RefreshToken(refresh_str)
+                token.blacklist()
+            except TokenError:
+                pass  # token já expirado — seguro ignorar; cookie será limpo
+        response = Response(status=status.HTTP_205_RESET_CONTENT)
+        _clear_refresh_cookie(response)
+        return response
+
+
+class CookieTokenRefreshView(APIView):
+    """POST /api/auth/refresh/ — renova access token usando o cookie HttpOnly."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        refresh_str = request.COOKIES.get(REFRESH_COOKIE_NAME)
+        if not refresh_str:
+            return Response({'detail': 'Sessão expirada.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        serializer = TokenRefreshSerializer(data={'refresh': refresh_str})
         try:
-            token = RefreshToken(refresh_token)
-            if token.payload.get('user_id') != request.user.id:
-                raise ValidationError({'refresh': 'Token não pertence ao usuário autenticado.'})
-            token.blacklist()
-        except TokenError:
-            raise ValidationError({'refresh': 'Token inválido ou já expirado.'})
-        return Response(status=status.HTTP_205_RESET_CONTENT)
+            serializer.is_valid(raise_exception=True)
+        except (TokenError, InvalidToken):
+            response = Response({'detail': 'Sessão expirada.'}, status=status.HTTP_401_UNAUTHORIZED)
+            _clear_refresh_cookie(response)
+            return response
+
+        data = serializer.validated_data
+        response = Response({'access': data['access']})
+        if 'refresh' in data:
+            _set_refresh_cookie(response, data['refresh'])
+        _log(request, AuditLog.TOKEN_REFRESH)
+        return response
 
 
 class MeView(generics.RetrieveUpdateAPIView):
@@ -92,7 +171,7 @@ class MeView(generics.RetrieveUpdateAPIView):
 class ForgotPasswordView(APIView):
     """POST /api/auth/password/forgot/ — envia código de recuperação por e-mail."""
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [AuthRateThrottle]
+    throttle_classes = [PasswordResetRateThrottle]
 
     def post(self, request):
         email = (request.data.get('email') or '').strip().lower()
@@ -123,7 +202,7 @@ class ForgotPasswordView(APIView):
 class ResetPasswordView(APIView):
     """POST /api/auth/password/reset/ — valida código e redefine a senha."""
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [AuthRateThrottle]
+    throttle_classes = [PasswordResetRateThrottle]
 
     def post(self, request):
         email = (request.data.get('email') or '').strip().lower()
@@ -175,6 +254,7 @@ class ResetPasswordView(APIView):
             ignore_conflicts=True,
         )
         TrustedDevice.objects.filter(user=user).delete()
+        _log(request, AuditLog.PWD_RESET, user=user)
 
         # E-mail de confirmação (best-effort)
         nome = user.get_full_name() or user.username
@@ -246,6 +326,7 @@ class TwoFactorSetupConfirmView(APIView):
             [BlacklistedToken(token=t) for t in outstanding],
             ignore_conflicts=True,
         )
+        _log(request, AuditLog.TWO_FA_ON, user=request.user)
 
         return Response({'backup_codes': codes})
 
@@ -315,14 +396,14 @@ class TwoFactorChallengeView(APIView):
             raise ValidationError({'detail': 'Muitas tentativas incorretas. Aguarde alguns minutos e tente novamente.'})
 
         if not verified:
+            _log(request, AuditLog.TOTP_FAIL)
             raise ValidationError({'code': ['Código inválido.']})
 
         refresh = RefreshToken.for_user(user)
         refresh['plan'] = user.plan
 
-        data = {
+        response_data = {
             'access': str(refresh.access_token),
-            'refresh': str(refresh),
             'user': UserDetailSerializer(user).data,
         }
 
@@ -334,9 +415,12 @@ class TwoFactorChallengeView(APIView):
                 user_agent=request.META.get('HTTP_USER_AGENT', '')[:256],
                 expires_at=timezone.now() + timedelta(days=30),
             )
-            data['trusted_device_token'] = td_token
+            response_data['trusted_device_token'] = td_token
 
-        return Response(data)
+        response = Response(response_data)
+        _set_refresh_cookie(response, str(refresh))
+        _log(request, AuditLog.TOTP_OK, user=user)
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +467,7 @@ class TwoFactorDisableView(APIView):
             [BlacklistedToken(token=t) for t in outstanding],
             ignore_conflicts=True,
         )
+        _log(request, AuditLog.TWO_FA_OFF, user=request.user)
 
         return Response({'detail': 'Autenticador desativado com sucesso.'})
 

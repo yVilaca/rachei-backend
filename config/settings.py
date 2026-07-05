@@ -111,6 +111,8 @@ REST_FRAMEWORK = {
         'anon': '100/hour',
         'user': '1000/hour',
         'auth': '10/minute',
+        'login': '5/minute',
+        'password_reset': '3/minute',
     },
 }
 
@@ -128,6 +130,29 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = os.getenv(
     'CORS_ALLOWED_ORIGINS', 'http://localhost:5173'
 ).split(',')
+CORS_ALLOW_CREDENTIALS = True  # obrigatório para HttpOnly cookie cross-port no mesmo hostname
+
+# Security headers (gerenciados pelo SecurityMiddleware do Django)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+SECURE_CROSS_ORIGIN_OPENER_POLICY = 'same-origin'
+X_FRAME_OPTIONS = 'DENY'
+
+# Em produção (HTTPS), setar via .env:
+#   SECURE_SSL_REDIRECT=True
+#   SECURE_HSTS_SECONDS=31536000
+SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False') == 'True'
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
+
+# Cookies de sessão seguros (não usados com JWT, mas defensivamente boas práticas)
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Strict'
+CSRF_COOKIE_HTTPONLY = False  # CSRF cookie precisa ser lido pelo JS (se CSRF ativo)
+
+# URL do admin — configurável via env para não ficar em /admin/ padrão
+ADMIN_URL = os.getenv('ADMIN_URL', 'admin/')
 
 # E-mail
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')

@@ -90,7 +90,7 @@ class TwoFactorChallengeTest(TestCase):
         return str(token)
 
     def test_challenge_with_valid_totp_returns_tokens(self):
-        """Challenge com código TOTP correto retorna access + refresh + user."""
+        """Challenge com código TOTP correto retorna access + user; refresh vai para cookie HttpOnly."""
         code = pyotp.TOTP(self.config.secret).now()
         response = self.client.post('/api/auth/2fa/challenge/', {
             'pending_token': self._pending_token(),
@@ -100,8 +100,9 @@ class TwoFactorChallengeTest(TestCase):
         self.assertEqual(response.status_code, 200,
                          msg=f"Esperado 200, recebido {response.status_code}: {response.data}")
         self.assertIn('access', response.data)
-        self.assertIn('refresh', response.data)
+        self.assertNotIn('refresh', response.data)  # refresh vai no cookie, não no body
         self.assertIn('user', response.data)
+        self.assertIn('rachei_refresh', response.cookies)  # cookie HttpOnly presente
 
 
 # ---------------------------------------------------------------------------

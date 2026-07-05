@@ -2,5 +2,15 @@ from rest_framework.throttling import AnonRateThrottle
 
 
 class AuthRateThrottle(AnonRateThrottle):
-    """10 tentativas/minuto por IP em endpoints de autenticação."""
+    """10 tentativas/minuto por IP em endpoints genéricos de autenticação."""
     scope = 'auth'
+
+
+class LoginRateThrottle(AnonRateThrottle):
+    """5 tentativas/minuto por IP — brute force prevention no login."""
+    scope = 'login'
+
+
+class PasswordResetRateThrottle(AnonRateThrottle):
+    """3 tentativas/minuto por IP — previne spam em password reset."""
+    scope = 'password_reset'

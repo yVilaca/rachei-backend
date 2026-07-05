@@ -249,3 +249,49 @@ class PasswordResetCode(models.Model):
             return True
         PasswordResetCode.objects.filter(pk=self.pk).update(attempts=models.F('attempts') + 1)
         return False
+
+
+class AuditLog(models.Model):
+    LOGIN_OK = 'login_ok'
+    LOGIN_FAIL = 'login_fail'
+    TOTP_OK = 'totp_ok'
+    TOTP_FAIL = 'totp_fail'
+    TOTP_LOCKED = 'totp_locked'
+    TWO_FA_ON = '2fa_on'
+    TWO_FA_OFF = '2fa_off'
+    PWD_RESET = 'pwd_reset'
+    TOKEN_REFRESH = 'token_refresh'
+
+    EVENT_CHOICES = [
+        (LOGIN_OK, 'Login bem-sucedido'),
+        (LOGIN_FAIL, 'Login falhou'),
+        (TOTP_OK, 'TOTP verificado'),
+        (TOTP_FAIL, 'TOTP falhou'),
+        (TOTP_LOCKED, 'TOTP bloqueado'),
+        (TWO_FA_ON, '2FA ativado'),
+        (TWO_FA_OFF, '2FA desativado'),
+        (PWD_RESET, 'Senha redefinida'),
+        (TOKEN_REFRESH, 'Token atualizado'),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        db_column='aud_usuario_id',
+        related_name='audit_logs',
+    )
+    event = models.CharField(max_length=20, choices=EVENT_CHOICES, db_column='aud_evento')
+    ip = models.GenericIPAddressField(null=True, blank=True, db_column='aud_ip')
+    user_agent = models.CharField(max_length=256, blank=True, db_column='aud_user_agent')
+    detail = models.JSONField(default=dict, blank=True, db_column='aud_detalhe')
+    created_at = models.DateTimeField(auto_now_add=True, db_column='aud_criado_em')
+
+    class Meta:
+        db_table = 'auditoria'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', '-created_at'], name='auditoria_usr_idx'),
+            models.Index(fields=['event', '-created_at'], name='auditoria_evt_idx'),
+            models.Index(fields=['ip', '-created_at'], name='auditoria_ip_idx'),
+        ]
