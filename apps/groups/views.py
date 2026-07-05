@@ -66,7 +66,8 @@ class GrupoListCreateView(generics.ListCreateAPIView):
             role=GroupMember.ROLE_ADMIN, status=GroupMember.STATUS_ATIVO,
             adicionado_por=request.user,
         )
-        return Response(GrupoDetailSerializer(group).data, status=status.HTTP_201_CREATED)
+        group.member_count = 1
+        return Response(GrupoListSerializer(group).data, status=status.HTTP_201_CREATED)
 
 
 class GrupoDetailView(generics.RetrieveUpdateAPIView):
