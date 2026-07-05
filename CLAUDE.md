@@ -52,6 +52,81 @@ Exemplos de código detalhados em `.claude/rules/`.
 - Nunca expor PKs inteiros sequenciais — usar UUID
 - Nunca `raw()` ou `cursor.execute()` com input do usuário sem parâmetros preparados
 
+### 404 vs 403 — padrão obrigatório
+
+- **Outsider** (não é membro ou recurso não existe para o user): **404** via filtro no queryset — nunca revelar que o recurso existe
+- **Membro com papel insuficiente** (é membro mas não admin): **403** via `check_object_permissions(request, obj)` com `IsGroupAdmin`
+- Helpers de acesso combinam verificação de membro em uma única query:
+  ```python
+  grupo = Group.objects.filter(
+      pk=pk, members__user=request.user, members__status='ativo'
+  ).first()
+  if not grupo:
+      raise NotFound(...)
+  ```
+- Nunca duas queries separadas (busca + verificação de acesso): unir tudo em um único `.filter()`
+
+### GroupMember — filtro de status obrigatório
+
+Todo acesso a dados financeiros ou de grupo exige `status=GroupMember.STATUS_ATIVO`. Esquecer esse filtro é falha silenciosa de segurança — membros `inativo` ou `pendente_registro` continuariam acessando histórico financeiro.
+
+```python
+# subquery para grupos do user (debts, payments)
+_grupos_do_user = lambda user: GroupMember.objects.filter(
+    user=user, status=GroupMember.STATUS_ATIVO
+).values('group_id')
+
+# verificar membro ativo em operações financeiras
+Installment.objects.get(
+    pk=pk,
+    debt__group__members__user=user,
+    debt__group__members__status='ativo',
+)
+
+# leitura de grupos pendentes de confirmação (somente para o próprio user, tela de confirmação)
+members__status__in=[STATUS_ATIVO, STATUS_PENDENTE_CONFIRMACAO]
+```
+
+### Throttles — tabela de referência
+
+| Throttle | Escopo | Limite | Quando usar |
+|---|---|---|---|
+| `LoginRateThrottle` | `login` | 5/min | POST /auth/login/ |
+| `AuthRateThrottle` | `auth` | 10/min | refresh, verify-phone, resend-sms |
+| `PasswordResetRateThrottle` | `password_reset` | 3/min | password reset, resend OTP |
+| `PublicPageRateThrottle` | `public_page` | 60/min | qualquer rota com `AllowAny` |
+
+Toda rota com `AllowAny` **deve** declarar `throttle_classes` explicitamente — o fallback global `AnonRateThrottle` (100/hora) é inadequado para endpoints sensíveis.
+
+### JWT e cookies
+
+- Access token: 15 min, em memória no cliente — **nunca** em `localStorage`
+- Refresh token: 7 dias, cookie HttpOnly `rachei_refresh` — **nunca** no corpo da resposta
+- `CookieTokenRefreshView` lê o refresh do cookie; tem `throttle_classes = [AuthRateThrottle]`
+- Ativar ou desativar 2FA invalida todos os `OutstandingToken` via blacklist (`bulk_create(ignore_conflicts=True)`)
+
+### Telefone — E.164
+
+Regex obrigatório: `^\+\d{8,15}$`. Validar em `validate_phone()` no serializer, nunca na view.
+
+```python
+_E164_RE = re.compile(r'^\+\d{8,15}$')
+```
+
+Telefone pode ser `null` (campo opcional no User); quando presente, deve ser E.164 e único.
+
+### Audit log
+
+`_log(user, evento, request, **extra)` — eventos e momento correto:
+
+| Evento | Quando |
+|---|---|
+| `LOGIN_OK` | **Depois** de 2FA concluído (nunca enquanto `TwoFAPendingToken` está ativo) |
+| `LOGIN_FAIL` | Credenciais inválidas |
+| `TOTP_OK` / `TOTP_FAIL` | Verificação do código TOTP |
+| `TOTP_LOCKED` | Em todo bloco `except` de replay/lock — nunca omitir |
+| `PASSWORD_RESET_*` | Solicitação, sucesso, falha |
+
 ---
 
 ## Services
