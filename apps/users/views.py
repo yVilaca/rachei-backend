@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 from datetime import timedelta
 
@@ -27,7 +28,7 @@ from .serializers import (
     UserDetailSerializer,
     UserFormSerializer,
 )
-from .throttles import AuthRateThrottle, LoginRateThrottle, PasswordResetRateThrottle
+from .throttles import AuthRateThrottle, LoginRateThrottle, PasswordResetRateThrottle, PhoneCheckRateThrottle
 from .tokens import TwoFAPendingToken
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,7 @@ class LogoutView(APIView):
 class CookieTokenRefreshView(APIView):
     """POST /api/auth/refresh/ — renova access token usando o cookie HttpOnly."""
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         refresh_str = request.COOKIES.get(REFRESH_COOKIE_NAME)
@@ -590,3 +592,25 @@ class TrustedDeviceDeleteView(APIView):
         if not deleted:
             return Response(status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+_E164_RE = re.compile(r'^\+\d{8,15}$')
+
+User = get_user_model()
+
+
+class CheckPhoneExistsView(APIView):
+    """GET /api/auth/check-phone/?phone=+55... — verifica se telefone tem conta cadastrada.
+
+    Retorna apenas {"exists": bool}. Nunca expõe dados do usuário.
+    Requer autenticação para prevenir enumeração pública.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [PhoneCheckRateThrottle]
+
+    def get(self, request):
+        phone = request.query_params.get('phone', '').strip()
+        if not _E164_RE.match(phone):
+            return Response({'exists': False})
+        exists = User.objects.filter(phone=phone).exists()
+        return Response({'exists': exists})

@@ -114,6 +114,7 @@ REST_FRAMEWORK = {
         'auth': '10/minute',
         'login': '5/minute',
         'password_reset': '3/minute',
+        'phone_check': '20/minute',
     },
 }
 
@@ -175,4 +176,38 @@ TOTP_ENCRYPTION_KEY = os.getenv('TOTP_ENCRYPTION_KEY', '')
 SMS_BACKEND = os.getenv('SMS_BACKEND', 'apps.users.sms.ConsoleSmsBackend')
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
-TWILIO_FROM = os.getenv('TWILIO_FROM', '')
+TWILIO_FROM = os.getenv('TWILIO_FROM', '')                        # SMS: +55...
+TWILIO_WHATSAPP_FROM = os.getenv('TWILIO_WHATSAPP_FROM', '')      # WhatsApp: whatsapp:+14155238886
+
+# WhatsApp backend (mesmo padrão do SMS_BACKEND)
+# Dev:  apps.groups.whatsapp.ConsoleWhatsAppBackend  (padrão)
+# Prod: apps.groups.whatsapp.TwilioWhatsAppBackend
+WHATSAPP_BACKEND = os.getenv('WHATSAPP_BACKEND', 'apps.groups.whatsapp.ConsoleWhatsAppBackend')
+
+# URL base do frontend — usada nos convites WhatsApp
+APP_INVITE_URL = os.getenv('APP_INVITE_URL', 'https://rachei.app/cadastro')
+
+# Logging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {
+            'format': '[{levelname}] {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'apps': {
+            'handlers': ['console'],
+            'level': 'DEBUG' if DEBUG else 'WARNING',
+            'propagate': False,
+        },
+    },
+}

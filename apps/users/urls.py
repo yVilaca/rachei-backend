@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    CheckPhoneExistsView,
     ForgotPasswordView,
     LogoutView,
     MeView,
@@ -21,6 +22,7 @@ from .views import (
 app_name = 'users'
 
 urlpatterns = [
+    path('check-phone/', CheckPhoneExistsView.as_view(), name='check_phone'),
     path('register/', RegisterView.as_view(), name='register'),
     path('phone/verify/', VerifyPhoneView.as_view(), name='phone_verify'),
     path('phone/resend/', ResendSmsView.as_view(), name='phone_resend'),
