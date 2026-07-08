@@ -97,6 +97,9 @@ class GroupMember(models.Model):
         related_name='membros_adicionados',
         db_column='mgp_adicionado_por_id',
     )
+    display_name = models.CharField(
+        max_length=150, blank=True, db_column='mgp_nome_exibicao',
+    )
     joined_at = models.DateTimeField(auto_now_add=True, db_column='mgp_entrou_em')
 
     class Meta:

@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 
 from .models import ContatoPendente, Group, GroupMember
 from .permissions import IsGroupAdmin, IsGroupMember
+from .whatsapp import dispatch_group_invite
 from .serializers import (
     AdicionarMembroSerializer,
     GrupoDetailSerializer,
@@ -13,6 +14,20 @@ from .serializers import (
     GrupoListSerializer,
     MembroListSerializer,
 )
+
+
+def _dispatch_invite(member, grupo, adicionado_por) -> None:
+    """Dispara convite WhatsApp para contato pendente recém-adicionado."""
+    contato = member.contato_pendente
+    if not contato:
+        return
+    inviter_name = adicionado_por.get_full_name() or adicionado_por.username
+    dispatch_group_invite(
+        phone=contato.phone,
+        name=contato.name,
+        inviter_name=inviter_name,
+        group_name=grupo.name,
+    )
 
 
 def _get_grupo(grupo_id, user, require_admin=False):
@@ -171,16 +186,19 @@ class MembroListCreateView(generics.ListCreateAPIView):
                 adicionado_por=request.user,
             )
         elif resolved_contato:
-            # Contato pendente já existe → reutiliza
+            # Contato pendente já existe → reutiliza; salva o nome que este grupo escolheu
+            display_name = (vd.get('name') or '').strip()
             member = GroupMember.objects.create(
                 group=grupo,
                 contato_pendente=resolved_contato,
                 role=role,
                 status=GroupMember.STATUS_PENDENTE_REGISTRO,
                 adicionado_por=request.user,
+                display_name=display_name,
             )
+            _dispatch_invite(member, grupo, request.user)
         else:
-            # Novo contato → cria ContatoPendente
+            # Novo contato → cria ContatoPendente e envia convite
             name = vd['name'].strip()
             contato = ContatoPendente.objects.create(
                 phone=phone,
@@ -193,7 +211,9 @@ class MembroListCreateView(generics.ListCreateAPIView):
                 role=role,
                 status=GroupMember.STATUS_PENDENTE_REGISTRO,
                 adicionado_por=request.user,
+                display_name=name,
             )
+            _dispatch_invite(member, grupo, request.user)
 
         return Response(
             MembroListSerializer(member).data,

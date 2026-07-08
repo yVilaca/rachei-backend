@@ -17,7 +17,7 @@ class GrupoListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Group
-        fields = ('id', 'name', 'emoji', 'archived', 'created_at', 'member_count')
+        fields = ('id', 'name', 'emoji', 'archived', 'member_count')
 
 
 class ContatoPendenteSerializer(serializers.ModelSerializer):
@@ -31,21 +31,29 @@ class ContatoPendenteSerializer(serializers.ModelSerializer):
 class MembroListSerializer(serializers.ModelSerializer):
     """Membro com dados do usuário ou do contato pendente."""
     user = UserListSerializer(read_only=True)
-    contato_pendente = ContatoPendenteSerializer(read_only=True)
+    contato_pendente = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMember
-        fields = ('id', 'user', 'contato_pendente', 'role', 'status', 'joined_at')
+        fields = ('id', 'user', 'contato_pendente', 'role', 'status')
+
+    def get_contato_pendente(self, obj):
+        if not obj.contato_pendente:
+            return None
+        data = ContatoPendenteSerializer(obj.contato_pendente).data
+        # Cada grupo pode ter seu próprio nome para o contato
+        if obj.display_name:
+            data['name'] = obj.display_name
+        return data
 
 
 class GrupoDetailSerializer(serializers.ModelSerializer):
-    """Detalhe completo — inclui membros e criador."""
+    """Detalhe do grupo — apenas dados necessários para o frontend."""
     members = serializers.SerializerMethodField()
-    created_by = UserListSerializer(read_only=True)
 
     class Meta:
         model = Group
-        fields = ('id', 'name', 'emoji', 'archived', 'created_at', 'created_by', 'members')
+        fields = ('id', 'name', 'emoji', 'archived', 'members')
 
     def get_members(self, obj):
         # Inativo: visível apenas para o grupo (com badge), mas o próprio inativo não vê
