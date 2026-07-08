@@ -25,7 +25,7 @@ class ContatoPendenteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ContatoPendente
-        fields = ('id', 'name', 'phone')
+        fields = ('name',)
 
 
 class MembroListSerializer(serializers.ModelSerializer):
