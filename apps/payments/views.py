@@ -11,10 +11,10 @@ from apps.users.throttles import PublicPageRateThrottle
 from .models import ChargeLink, Comprovante
 from .serializers import (
     ComprovanteDetailSerializer,
-    ComprovanteFormSerializer,
+    DeclaracaoPagamentoSerializer,
     PagamentoPublicoSerializer,
 )
-from .services import confirmar_pagamento, enviar_comprovante, gerar_link_cobranca, rejeitar_pagamento
+from .services import confirmar_pagamento, declarar_pagamento, gerar_link_cobranca, rejeitar_pagamento
 
 
 def _get_parcela(parcela_id, user):
@@ -34,23 +34,24 @@ def _get_parcela(parcela_id, user):
 
 
 class ComprovanteCreateView(APIView):
-    """POST /api/parcelas/{pk}/comprovante/ — devedor envia comprovante."""
+    """POST /api/parcelas/{pk}/comprovante/ — devedor declara pagamento (comprovante opcional)."""
 
     def post(self, request, pk):
         parcela = _get_parcela(pk, request.user)
-        serializer = ComprovanteFormSerializer(data=request.data)
+        serializer = DeclaracaoPagamentoSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         try:
-            comprovante = enviar_comprovante(
+            comprovante = declarar_pagamento(
                 parcela=parcela,
-                file_url=serializer.validated_data['file_url'],
+                file_url=serializer.validated_data.get('file_url') or None,
                 enviado_por=request.user,
             )
         except (PermissionError, ValueError) as e:
             raise ValidationError(str(e))
 
-        return Response(ComprovanteDetailSerializer(comprovante).data, status=status.HTTP_201_CREATED)
+        data = ComprovanteDetailSerializer(comprovante).data if comprovante else {}
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 class ConfirmarPagamentoView(APIView):

@@ -4,12 +4,9 @@ from apps.users.serializers import UserListSerializer
 from .models import ChargeLink, Comprovante
 
 
-class ComprovanteFormSerializer(serializers.ModelSerializer):
-    """Input para upload de comprovante."""
-
-    class Meta:
-        model = Comprovante
-        fields = ('file_url',)
+class DeclaracaoPagamentoSerializer(serializers.Serializer):
+    """Input para declaração de pagamento — comprovante opcional."""
+    file_url = serializers.URLField(required=False, allow_null=True, allow_blank=True)
 
 
 class ComprovanteDetailSerializer(serializers.ModelSerializer):

@@ -8,23 +8,27 @@ from .models import ChargeLink, Comprovante
 
 
 @transaction.atomic
-def enviar_comprovante(*, parcela, file_url, enviado_por):
+def declarar_pagamento(*, parcela, enviado_por, file_url=None):
     """
-    Devedor envia comprovante — status muda para awaiting_confirmation.
+    Devedor declara que pagou — status muda para awaiting_confirmation.
+    Comprovante é opcional: se file_url fornecido, registra; caso contrário,
+    apenas atualiza o status para revisão do credor.
 
     Raises PermissionError se o solicitante não for o devedor.
     Raises ValueError se a parcela já estiver paga.
     """
     if enviado_por.pk != parcela.debtor_id:
-        raise PermissionError('Apenas o devedor pode enviar o comprovante.')
+        raise PermissionError('Apenas o devedor pode declarar o pagamento.')
     if parcela.status == Installment.STATUS_PAID:
         raise ValueError('Parcela já está confirmada como paga.')
 
-    comprovante = Comprovante.objects.create(
-        parcela=parcela,
-        file_url=file_url,
-        uploaded_by=enviado_por,
-    )
+    comprovante = None
+    if file_url:
+        comprovante = Comprovante.objects.create(
+            parcela=parcela,
+            file_url=file_url,
+            uploaded_by=enviado_por,
+        )
     Installment.objects.filter(pk=parcela.pk).update(
         status=Installment.STATUS_AWAITING,
         paid_at=timezone.now(),
