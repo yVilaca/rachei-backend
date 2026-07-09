@@ -4,6 +4,7 @@ from .views import (
     AtividadeListView,
     ComprovanteCreateView,
     ConfirmarPagamentoView,
+    DashboardView,
     LinkCobrancaCreateView,
     MarcarLidaView,
     PagamentoPublicoView,
@@ -13,6 +14,7 @@ from .views import (
 app_name = 'payments'
 
 urlpatterns = [
+    path('dashboard/', DashboardView.as_view(), name='dashboard'),
     path('parcelas/<uuid:pk>/comprovante/', ComprovanteCreateView.as_view(), name='comprovante-create'),
     path('parcelas/<uuid:pk>/confirmar/', ConfirmarPagamentoView.as_view(), name='confirmar-pagamento'),
     path('parcelas/<uuid:pk>/rejeitar/', RejeitarPagamentoView.as_view(), name='rejeitar-pagamento'),

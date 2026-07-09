@@ -1,3 +1,4 @@
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -6,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.debts.models import Debt, Installment
+from apps.groups.models import Group, GroupMember
 from apps.users.models import NotificacaoLida
 from apps.users.throttles import PublicPageRateThrottle
 from .models import ChargeLink, Comprovante
@@ -15,6 +17,111 @@ from .serializers import (
     PagamentoPublicoSerializer,
 )
 from .services import confirmar_pagamento, declarar_pagamento, gerar_link_cobranca, rejeitar_pagamento
+
+
+class DashboardView(APIView):
+    """
+    GET /api/dashboard/ — resumo financeiro do usuário autenticado.
+
+    3 queries: parcelas a receber, parcelas a pagar, grupos ativos.
+    Calcula totais e saldo por pessoa em Python.
+    """
+
+    def get(self, request):
+        user = request.user
+
+        active_group_ids = (
+            GroupMember.objects
+            .filter(user=user, status=GroupMember.STATUS_ATIVO)
+            .values('group_id')
+        )
+
+        # Parcelas onde sou credor e a outra parte ainda não pagou
+        a_receber_qs = list(
+            Installment.objects
+            .filter(debt__group_id__in=active_group_ids, debt__paid_by=user)
+            .exclude(status=Installment.STATUS_PAID)
+            .exclude(debtor=user)
+            .select_related('debt__group', 'debtor')
+            .order_by('-debt__created_at')
+        )
+
+        # Parcelas onde sou devedor e ainda não paguei
+        a_pagar_qs = list(
+            Installment.objects
+            .filter(debt__group_id__in=active_group_ids, debtor=user)
+            .exclude(status=Installment.STATUS_PAID)
+            .exclude(debt__paid_by=user)
+            .select_related('debt__group', 'debt__paid_by')
+            .order_by('-debt__created_at')
+        )
+
+        # Grupos ativos com contagem de membros ativos
+        grupos_qs = (
+            Group.objects
+            .filter(pk__in=active_group_ids, archived=False)
+            .annotate(member_count=Count(
+                'members', filter=Q(members__status=GroupMember.STATUS_ATIVO)
+            ))
+            .only('id', 'name', 'emoji', 'archived')
+            .order_by('name')
+        )
+
+        # Saldo por pessoa (positivo = me devem, negativo = eu devo)
+        balance: dict = {}
+        for inst in a_receber_qs:
+            uid = inst.debtor.pk
+            if uid not in balance:
+                balance[uid] = {'user': {'id': uid, 'name': inst.debtor.name}, 'balance_cents': 0}
+            balance[uid]['balance_cents'] += inst.amount_cents
+
+        for inst in a_pagar_qs:
+            uid = inst.debt.paid_by.pk
+            if uid not in balance:
+                balance[uid] = {'user': {'id': uid, 'name': inst.debt.paid_by.name}, 'balance_cents': 0}
+            balance[uid]['balance_cents'] -= inst.amount_cents
+
+        return Response({
+            'total_a_receber': sum(i.amount_cents for i in a_receber_qs),
+            'total_a_pagar': sum(i.amount_cents for i in a_pagar_qs),
+            'a_receber': [
+                {
+                    'installment_id': str(i.pk),
+                    'debt_id': str(i.debt.pk),
+                    'description': i.debt.description,
+                    'group_name': i.debt.group.name,
+                    'amount_cents': i.amount_cents,
+                    'status': i.status,
+                    'debtor': {'id': i.debtor.pk, 'name': i.debtor.name},
+                }
+                for i in a_receber_qs
+            ],
+            'a_pagar': [
+                {
+                    'installment_id': str(i.pk),
+                    'debt_id': str(i.debt.pk),
+                    'description': i.debt.description,
+                    'group_name': i.debt.group.name,
+                    'amount_cents': i.amount_cents,
+                    'status': i.status,
+                    'creditor': {'id': i.debt.paid_by.pk, 'name': i.debt.paid_by.name},
+                }
+                for i in a_pagar_qs
+            ],
+            'saldo_por_pessoa': sorted(
+                balance.values(), key=lambda x: x['balance_cents'], reverse=True
+            ),
+            'grupos': [
+                {
+                    'id': str(g.pk),
+                    'name': g.name,
+                    'emoji': g.emoji,
+                    'archived': g.archived,
+                    'member_count': g.member_count,
+                }
+                for g in grupos_qs
+            ],
+        })
 
 
 def _get_parcela(parcela_id, user):
