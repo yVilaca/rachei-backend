@@ -69,16 +69,19 @@ class DashboardView(APIView):
 
         # Saldo por pessoa (positivo = me devem, negativo = eu devo)
         balance: dict = {}
+        def _name(u):
+            return u.get_full_name() or u.username
+
         for inst in a_receber_qs:
             uid = inst.debtor.pk
             if uid not in balance:
-                balance[uid] = {'user': {'id': uid, 'name': inst.debtor.name}, 'balance_cents': 0}
+                balance[uid] = {'user': {'id': uid, 'name': _name(inst.debtor)}, 'balance_cents': 0}
             balance[uid]['balance_cents'] += inst.amount_cents
 
         for inst in a_pagar_qs:
             uid = inst.debt.paid_by.pk
             if uid not in balance:
-                balance[uid] = {'user': {'id': uid, 'name': inst.debt.paid_by.name}, 'balance_cents': 0}
+                balance[uid] = {'user': {'id': uid, 'name': _name(inst.debt.paid_by)}, 'balance_cents': 0}
             balance[uid]['balance_cents'] -= inst.amount_cents
 
         return Response({
@@ -92,7 +95,7 @@ class DashboardView(APIView):
                     'group_name': i.debt.group.name,
                     'amount_cents': i.amount_cents,
                     'status': i.status,
-                    'debtor': {'id': i.debtor.pk, 'name': i.debtor.name},
+                    'debtor': {'id': i.debtor.pk, 'name': _name(i.debtor)},
                 }
                 for i in a_receber_qs
             ],
@@ -104,7 +107,7 @@ class DashboardView(APIView):
                     'group_name': i.debt.group.name,
                     'amount_cents': i.amount_cents,
                     'status': i.status,
-                    'creditor': {'id': i.debt.paid_by.pk, 'name': i.debt.paid_by.name},
+                    'creditor': {'id': i.debt.paid_by.pk, 'name': _name(i.debt.paid_by)},
                 }
                 for i in a_pagar_qs
             ],
