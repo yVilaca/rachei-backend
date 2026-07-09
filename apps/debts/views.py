@@ -21,6 +21,7 @@ _grupos_do_user = lambda user: GroupMember.objects.filter(
 class DespesasPorGrupoView(generics.ListAPIView):
     """GET /api/grupos/{grupo_pk}/despesas/ — despesas de um grupo."""
     serializer_class = DespesaListSerializer
+    pagination_class = None
 
     def get_queryset(self):
         grupo_pk = self.kwargs['grupo_pk']
