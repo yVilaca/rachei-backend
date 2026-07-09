@@ -83,17 +83,13 @@ class DespesaCreateView(APIView):
         except ValueError as e:
             raise ValidationError(str(e))
 
-        despesa_detail = (
+        despesa_com_parcelas = (
             Debt.objects
-            .select_related('paid_by', 'group')
-            .prefetch_related(
-                'installments__debtor',
-                'installments__comprovantes',
-                'installments__charge_link',
-            )
+            .select_related('paid_by')
+            .prefetch_related('installments__debtor')
             .get(pk=despesa.pk)
         )
-        return Response(DespesaDetailSerializer(despesa_detail).data, status=status.HTTP_201_CREATED)
+        return Response(DespesaListSerializer(despesa_com_parcelas).data, status=status.HTTP_201_CREATED)
 
 
 class DespesaDetailView(generics.RetrieveAPIView):

@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils import timezone
 
 from apps.groups.models import GroupMember
 from .models import Debt, Installment
@@ -45,11 +46,15 @@ def criar_despesa(*, grupo, paid_by, created_by, description, total_amount_cents
         split_type=split_type,
     )
 
+    now = timezone.now()
     Installment.objects.bulk_create([
         Installment(
             debt=despesa,
             debtor=p['debtor'],
             amount_cents=p['amount_cents'],
+            status=Installment.STATUS_PAID if p['debtor'].pk == paid_by.pk else Installment.STATUS_PENDING,
+            paid_at=now if p['debtor'].pk == paid_by.pk else None,
+            confirmed_at=now if p['debtor'].pk == paid_by.pk else None,
         )
         for p in parcelas_data
     ])
