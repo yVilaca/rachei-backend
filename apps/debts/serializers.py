@@ -8,17 +8,17 @@ from .models import Debt, Installment
 User = get_user_model()
 
 
-class ParcelaListSerializer(serializers.ModelSerializer):
-    """Campos mínimos para listagem dentro de uma despesa."""
+class ParcelaBalanceSerializer(serializers.ModelSerializer):
+    """Campos mínimos para listagem — cálculo de saldo e filtro de status."""
     debtor = UserListSerializer(read_only=True)
 
     class Meta:
         model = Installment
-        fields = ('id', 'debtor', 'amount_cents', 'status', 'paid_at', 'confirmed_at')
+        fields = ('id', 'debtor', 'amount_cents', 'status')
 
 
-class ParcelaDetailSerializer(serializers.ModelSerializer):
-    """Detalhe de parcela com comprovante e token do link."""
+class ParcelaListSerializer(serializers.ModelSerializer):
+    """Campos completos para detalhe de despesa."""
     debtor = UserListSerializer(read_only=True)
     comprovante = serializers.SerializerMethodField()
     charge_link_token = serializers.SerializerMethodField()
@@ -44,26 +44,34 @@ class ParcelaDetailSerializer(serializers.ModelSerializer):
             return None
 
 
+# ParcelaDetailSerializer mantido para GET /api/parcelas/{id}/ — sem alterações
+ParcelaDetailSerializer = ParcelaListSerializer
+
+
 class DespesaListSerializer(serializers.ModelSerializer):
-    """Campos mínimos para listagem — card de despesa."""
+    """Campos para listagem por grupo — inclui parcelas mínimas para saldo e filtros."""
     paid_by = UserListSerializer(read_only=True)
+    parcelas = ParcelaBalanceSerializer(source='installments', many=True, read_only=True)
 
     class Meta:
         model = Debt
-        fields = ('id', 'description', 'total_amount_cents', 'split_type', 'paid_by', 'created_at')
+        fields = (
+            'id', 'group_id', 'description', 'total_amount_cents',
+            'split_type', 'paid_by', 'created_at', 'parcelas',
+        )
 
 
 class DespesaDetailSerializer(serializers.ModelSerializer):
     """Detalhe completo com parcelas aninhadas."""
     paid_by = UserListSerializer(read_only=True)
-    created_by = UserListSerializer(read_only=True)
+    group_name = serializers.CharField(source='group.name', read_only=True)
     parcelas = ParcelaListSerializer(source='installments', many=True, read_only=True)
 
     class Meta:
         model = Debt
         fields = (
-            'id', 'description', 'total_amount_cents', 'split_type',
-            'paid_by', 'created_by', 'created_at', 'parcelas',
+            'id', 'group_id', 'group_name', 'description', 'total_amount_cents',
+            'split_type', 'paid_by', 'created_at', 'parcelas',
         )
 
 
@@ -79,6 +87,7 @@ class DespesaFormSerializer(serializers.Serializer):
     description = serializers.CharField(max_length=255)
     total_amount_cents = serializers.IntegerField(min_value=1)
     split_type = serializers.ChoiceField(choices=Debt.SPLIT_CHOICES)
+    paid_by_id = serializers.IntegerField(required=False, allow_null=True)
     parcelas = ParcelaInputSerializer(many=True)
 
     def validate_parcelas(self, value):

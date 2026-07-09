@@ -7,6 +7,7 @@ from .views import (
     LinkCobrancaCreateView,
     MarcarLidaView,
     PagamentoPublicoView,
+    RejeitarPagamentoView,
 )
 
 app_name = 'payments'
@@ -14,6 +15,7 @@ app_name = 'payments'
 urlpatterns = [
     path('parcelas/<uuid:pk>/comprovante/', ComprovanteCreateView.as_view(), name='comprovante-create'),
     path('parcelas/<uuid:pk>/confirmar/', ConfirmarPagamentoView.as_view(), name='confirmar-pagamento'),
+    path('parcelas/<uuid:pk>/rejeitar/', RejeitarPagamentoView.as_view(), name='rejeitar-pagamento'),
     path('parcelas/<uuid:pk>/link-cobranca/', LinkCobrancaCreateView.as_view(), name='link-cobranca'),
     path('pagamento/<uuid:token>/', PagamentoPublicoView.as_view(), name='pagamento-publico'),
     # atividade/marcar-lida antes de atividade/ para resolução correta

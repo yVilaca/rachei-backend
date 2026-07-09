@@ -71,3 +71,24 @@ def gerar_link_cobranca(*, parcela, solicitado_por):
         installment=parcela,
         expires_at=timezone.now() + timedelta(days=7),
     )
+
+
+@transaction.atomic
+def rejeitar_pagamento(*, parcela, rejeitado_por):
+    """
+    Credor rejeita o comprovante — status volta para pending.
+
+    Raises PermissionError se o solicitante não for o credor.
+    Raises ValueError se a parcela não estiver aguardando confirmação.
+    """
+    if rejeitado_por.pk != parcela.debt.paid_by_id:
+        raise PermissionError('Apenas o credor pode rejeitar o comprovante.')
+    if parcela.status != Installment.STATUS_AWAITING:
+        raise ValueError('Parcela não está aguardando confirmação.')
+
+    Installment.objects.filter(pk=parcela.pk).update(
+        status=Installment.STATUS_PENDING,
+        paid_at=None,
+    )
+    parcela.refresh_from_db(fields=['status', 'paid_at'])
+    return parcela

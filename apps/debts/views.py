@@ -1,21 +1,21 @@
 from rest_framework import generics, status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.groups.models import Group, GroupMember
 from .models import Debt, Installment
-
-_grupos_do_user = lambda user: GroupMember.objects.filter(
-    user=user, status=GroupMember.STATUS_ATIVO
-).values('group_id')
 from .serializers import (
     DespesaDetailSerializer,
     DespesaFormSerializer,
     DespesaListSerializer,
-    ParcelaDetailSerializer,
+    ParcelaListSerializer,
 )
 from .services import criar_despesa
+
+_grupos_do_user = lambda user: GroupMember.objects.filter(
+    user=user, status=GroupMember.STATUS_ATIVO
+).values('group_id')
 
 
 class DespesasPorGrupoView(generics.ListAPIView):
@@ -24,7 +24,6 @@ class DespesasPorGrupoView(generics.ListAPIView):
 
     def get_queryset(self):
         grupo_pk = self.kwargs['grupo_pk']
-        # 404 para outsiders e inativos — esconde existência do grupo
         grupo = Group.objects.filter(
             pk=grupo_pk,
             members__user=self.request.user,
@@ -36,6 +35,7 @@ class DespesasPorGrupoView(generics.ListAPIView):
             Debt.objects
             .filter(group=grupo)
             .select_related('paid_by')
+            .prefetch_related('installments__debtor')
             .order_by('-created_at')
         )
 
@@ -56,10 +56,21 @@ class DespesaCreateView(APIView):
         if not grupo:
             raise NotFound('Grupo não encontrado.')
 
+        paid_by_id = data.get('paid_by_id')
+        if paid_by_id:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            try:
+                paid_by = User.objects.get(pk=paid_by_id)
+            except User.DoesNotExist:
+                raise ValidationError({'paid_by_id': 'Usuário não encontrado.'})
+        else:
+            paid_by = request.user
+
         try:
             despesa = criar_despesa(
                 grupo=grupo,
-                paid_by=request.user,
+                paid_by=paid_by,
                 created_by=request.user,
                 description=data['description'],
                 total_amount_cents=data['total_amount_cents'],
@@ -73,8 +84,12 @@ class DespesaCreateView(APIView):
 
         despesa_detail = (
             Debt.objects
-            .select_related('paid_by', 'created_by')
-            .prefetch_related('installments__debtor')
+            .select_related('paid_by', 'group')
+            .prefetch_related(
+                'installments__debtor',
+                'installments__comprovantes',
+                'installments__charge_link',
+            )
             .get(pk=despesa.pk)
         )
         return Response(DespesaDetailSerializer(despesa_detail).data, status=status.HTTP_201_CREATED)
@@ -88,7 +103,7 @@ class DespesaDetailView(generics.RetrieveAPIView):
         return (
             Debt.objects
             .filter(group_id__in=_grupos_do_user(self.request.user))
-            .select_related('paid_by', 'created_by')
+            .select_related('paid_by', 'group')
             .prefetch_related(
                 'installments__debtor',
                 'installments__comprovantes',
@@ -99,7 +114,7 @@ class DespesaDetailView(generics.RetrieveAPIView):
 
 class ParcelaDetailView(generics.RetrieveAPIView):
     """GET /api/parcelas/{id}/ — detalhe de parcela com comprovante e link."""
-    serializer_class = ParcelaDetailSerializer
+    serializer_class = ParcelaListSerializer
 
     def get_queryset(self):
         return (

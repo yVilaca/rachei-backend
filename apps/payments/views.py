@@ -14,7 +14,7 @@ from .serializers import (
     ComprovanteFormSerializer,
     PagamentoPublicoSerializer,
 )
-from .services import confirmar_pagamento, enviar_comprovante, gerar_link_cobranca
+from .services import confirmar_pagamento, enviar_comprovante, gerar_link_cobranca, rejeitar_pagamento
 
 
 def _get_parcela(parcela_id, user):
@@ -65,6 +65,20 @@ class ConfirmarPagamentoView(APIView):
             raise ValidationError(str(e))
 
         return Response({'status': parcela.status, 'confirmed_at': parcela.confirmed_at})
+
+
+class RejeitarPagamentoView(APIView):
+    """POST /api/parcelas/{pk}/rejeitar/ — credor rejeita comprovante."""
+
+    def post(self, request, pk):
+        parcela = _get_parcela(pk, request.user)
+
+        try:
+            parcela = rejeitar_pagamento(parcela=parcela, rejeitado_por=request.user)
+        except (PermissionError, ValueError) as e:
+            raise ValidationError(str(e))
+
+        return Response({'status': parcela.status})
 
 
 class LinkCobrancaCreateView(APIView):
