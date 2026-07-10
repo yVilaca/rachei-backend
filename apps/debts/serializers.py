@@ -82,12 +82,15 @@ class ParcelaInputSerializer(serializers.Serializer):
 
 
 class DespesaFormSerializer(serializers.Serializer):
-    """Validação de criação de despesa com parcelas."""
+    """Validação de criação de despesa com parcelas.
+
+    O credor (paid_by) é sempre request.user — nunca vem do corpo.
+    Quem registra a despesa é quem bancou a conta e confirmará os pagamentos.
+    """
     grupo_id = serializers.UUIDField()
     description = serializers.CharField(max_length=255)
     total_amount_cents = serializers.IntegerField(min_value=1)
     split_type = serializers.ChoiceField(choices=Debt.SPLIT_CHOICES)
-    paid_by_id = serializers.IntegerField(required=False, allow_null=True)
     parcelas = ParcelaInputSerializer(many=True)
 
     def validate_parcelas(self, value):

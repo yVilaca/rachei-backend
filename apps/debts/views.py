@@ -57,21 +57,10 @@ class DespesaCreateView(APIView):
         if not grupo:
             raise NotFound('Grupo não encontrado.')
 
-        paid_by_id = data.get('paid_by_id')
-        if paid_by_id:
-            from django.contrib.auth import get_user_model
-            User = get_user_model()
-            try:
-                paid_by = User.objects.get(pk=paid_by_id)
-            except User.DoesNotExist:
-                raise ValidationError({'paid_by_id': 'Usuário não encontrado.'})
-        else:
-            paid_by = request.user
-
         try:
             despesa = criar_despesa(
                 grupo=grupo,
-                paid_by=paid_by,
+                paid_by=request.user,
                 created_by=request.user,
                 description=data['description'],
                 total_amount_cents=data['total_amount_cents'],
