@@ -116,6 +116,11 @@ REST_FRAMEWORK = {
         'password_reset': '3/minute',
         'phone_check': '20/minute',
     },
+    # Nº de proxies confiáveis à frente da app. Default 0: throttle usa REMOTE_ADDR
+    # e IGNORA o X-Forwarded-For do cliente (senão o header é forjável e burla o
+    # rate limit). Em produção atrás de N proxies (ex: nginx), setar NUM_PROXIES=N
+    # via .env para ler o IP real do cliente na posição correta do XFF.
+    'NUM_PROXIES': int(os.getenv('NUM_PROXIES', '0')),
 }
 
 # JWT
