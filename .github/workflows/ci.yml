@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  tests:
+    name: Testes (Postgres) + cobertura
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Roda EXATAMENTE o mesmo alvo Docker que o Jenkins usará depois.
+      # A suíte roda contra Postgres (motor de produção) e falha se a
+      # cobertura cair abaixo do limiar definido em .coveragerc (fail_under).
+      - name: Suíte de testes contra Postgres
+        run: >
+          docker compose -f docker-compose.test.yml up
+          --build --abort-on-container-exit --exit-code-from tests

@@ -1,0 +1,2 @@
+# Dependências de teste/CI (não vão para produção)
+coverage==7.15.1

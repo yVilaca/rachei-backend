@@ -1,0 +1,22 @@
+[run]
+source = apps
+branch = True
+omit =
+    */migrations/*
+    */tests.py
+    */tests/*
+    */__init__.py
+    */apps.py
+    */admin.py
+    config/*
+    manage.py
+
+[report]
+show_missing = True
+skip_covered = False
+# Limiar mínimo de cobertura — CI falha abaixo disso.
+fail_under = 80
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
