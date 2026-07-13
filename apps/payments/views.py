@@ -241,86 +241,72 @@ class AtividadeListView(APIView):
         user = request.user
         eventos = []
 
+        def _name(u):
+            return (u.get_full_name() or u.username) if u else None
+
         # ── Despesas criadas pelo usuário ─────────────────────────────────────
-        for d in Debt.objects.filter(created_by=user).only('id', 'created_at'):
+        for d in Debt.objects.filter(created_by=user).select_related('group'):
             eventos.append({
                 'id': f'ev-created-{d.id}',
                 'tipo': 'debt_created_me',
                 'despesa_id': str(d.id),
                 'parcela_id': None,
                 'data': d.created_at,
+                'descricao': d.description,
+                'grupo_nome': d.group.name,
+                'valor_cents': d.total_amount_cents,
+                'contraparte': None,
             })
 
         # ── Parcelas onde o usuário é devedor ────────────────────────────────
-        parcelas_dev = list(
+        parcelas_dev = (
             Installment.objects
             .filter(debtor=user)
-            .select_related('debt', 'charge_link')
-            .only('id', 'status', 'paid_at', 'confirmed_at', 'debt_id',
-                  'debt__created_at', 'debt__id')
+            .exclude(debt__paid_by=user)  # ignora a parcela-própria do credor (auto-paga)
+            .select_related('debt__group', 'debt__paid_by', 'charge_link')
         )
         for p in parcelas_dev:
-            eventos.append({
-                'id': f'ev-added-{p.debt_id}',
-                'tipo': 'debt_added',
+            base = {
                 'despesa_id': str(p.debt_id),
                 'parcela_id': str(p.id),
-                'data': p.debt.created_at,
-            })
+                'descricao': p.debt.description,
+                'grupo_nome': p.debt.group.name,
+                'valor_cents': p.amount_cents,
+                'contraparte': _name(p.debt.paid_by),  # credor
+            }
+            eventos.append({**base, 'id': f'ev-added-{p.debt_id}', 'tipo': 'debt_added', 'data': p.debt.created_at})
             if p.status == Installment.STATUS_PENDING:
-                eventos.append({
-                    'id': f'ev-pending-{p.id}',
-                    'tipo': 'pending_reminder',
-                    'despesa_id': str(p.debt_id),
-                    'parcela_id': str(p.id),
-                    'data': p.debt.created_at,
-                })
+                eventos.append({**base, 'id': f'ev-pending-{p.id}', 'tipo': 'pending_reminder', 'data': p.debt.created_at})
             if p.status == Installment.STATUS_PAID and p.confirmed_at:
-                eventos.append({
-                    'id': f'ev-mypaid-{p.id}',
-                    'tipo': 'payment_confirmed',
-                    'despesa_id': str(p.debt_id),
-                    'parcela_id': str(p.id),
-                    'data': p.confirmed_at,
-                })
+                eventos.append({**base, 'id': f'ev-mypaid-{p.id}', 'tipo': 'payment_confirmed', 'data': p.confirmed_at})
             try:
-                eventos.append({
-                    'id': f'ev-charged-{p.id}',
-                    'tipo': 'charged',
-                    'despesa_id': str(p.debt_id),
-                    'parcela_id': str(p.id),
-                    'data': p.charge_link.created_at,
-                })
+                eventos.append({**base, 'id': f'ev-charged-{p.id}', 'tipo': 'charged', 'data': p.charge_link.created_at})
             except ChargeLink.DoesNotExist:
                 pass
 
         # ── Parcelas onde o usuário é credor ─────────────────────────────────
-        parcelas_cred = list(
+        parcelas_cred = (
             Installment.objects
             .filter(debt__paid_by=user)
-            .select_related('debt')
+            .exclude(debtor=user)  # ignora a parcela-própria (auto-paga)
+            .select_related('debt__group', 'debtor')
             .prefetch_related('comprovantes')
-            .only('id', 'status', 'confirmed_at', 'debt_id', 'debt__created_at')
         )
         for p in parcelas_cred:
+            base = {
+                'despesa_id': str(p.debt_id),
+                'parcela_id': str(p.id),
+                'descricao': p.debt.description,
+                'grupo_nome': p.debt.group.name,
+                'valor_cents': p.amount_cents,
+                'contraparte': _name(p.debtor),  # devedor
+            }
             if p.status == Installment.STATUS_AWAITING:
                 cpvs = sorted(p.comprovantes.all(), key=lambda c: c.uploaded_at, reverse=True)
                 data_evento = cpvs[0].uploaded_at if cpvs else p.debt.created_at
-                eventos.append({
-                    'id': f'ev-proof-{p.id}',
-                    'tipo': 'proof_received',
-                    'despesa_id': str(p.debt_id),
-                    'parcela_id': str(p.id),
-                    'data': data_evento,
-                })
+                eventos.append({**base, 'id': f'ev-proof-{p.id}', 'tipo': 'proof_received', 'data': data_evento})
             if p.status == Installment.STATUS_PAID and p.confirmed_at:
-                eventos.append({
-                    'id': f'ev-paid-{p.id}',
-                    'tipo': 'payment_confirmed',
-                    'despesa_id': str(p.debt_id),
-                    'parcela_id': str(p.id),
-                    'data': p.confirmed_at,
-                })
+                eventos.append({**base, 'id': f'ev-paid-{p.id}', 'tipo': 'payment_confirmed', 'data': p.confirmed_at})
 
         # ── Marcar lidos e deduplicar ─────────────────────────────────────────
         lidas = set(
@@ -336,11 +322,15 @@ class AtividadeListView(APIView):
                 e['lido'] = e['id'] in lidas
                 resultado.append(e)
 
+        unread_count = sum(1 for e in resultado if not e['lido'])
+
         # ── Paginação manual ──────────────────────────────────────────────────
         paginator = PageNumberPagination()
         paginator.page_size = 20
         page = paginator.paginate_queryset(resultado, request)
-        return paginator.get_paginated_response(page)
+        response = paginator.get_paginated_response(page)
+        response.data['unread_count'] = unread_count
+        return response
 
 
 class MarcarLidaView(APIView):
