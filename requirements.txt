@@ -7,6 +7,9 @@ PyJWT==2.13.0
 python-dotenv==1.2.2
 sqlparse==0.5.5
 tzdata==2026.2
+# 2FA: criptografia do secret TOTP (Fernet) e geração/validação de códigos
+cryptography==49.0.0
+pyotp==2.10.0
 # Produção usa PostgreSQL
 psycopg2-binary==2.9.10
 gunicorn==23.0.0
