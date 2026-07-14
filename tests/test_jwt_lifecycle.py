@@ -73,13 +73,13 @@ class TokenForgeryTest(SecurityTestCase):
         bad = jwt.encode(payload, 'chave-totalmente-errada', algorithm='HS256')
         self.assertEqual(self.api(bad).get(ME).status_code, 401)
 
-    def test_hs_signed_with_public_secret_guess_rejected(self):
-        # downgrade/guess: assina com string vazia (algumas libs mal-configuradas aceitam)
+    def test_hs_signed_with_guessed_default_secret_rejected(self):
+        # Atacante chuta o SECRET_KEY padrão inseguro do Django — deve falhar (401)
         payload = {
             'token_type': 'access', 'jti': 'x', 'user_id': self.user_id,
             'exp': int((timezone.now() + timedelta(hours=1)).timestamp()),
         }
-        bad = jwt.encode(payload, '', algorithm='HS256')
+        bad = jwt.encode(payload, 'django-insecure-change-me', algorithm='HS256')
         self.assertEqual(self.api(bad).get(ME).status_code, 401)
 
     def test_expired_access_rejected(self):
