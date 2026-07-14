@@ -1,0 +1,11 @@
+#!/bin/sh
+# Trava local: barra o push se a suíte de segurança/regressão falhar.
+# Roda contra o Postgres local (mesmo motor da CI e de produção).
+# Ativar (uma vez, após configurar o Postgres local): git config core.hooksPath .githooks
+# Emergência (pular): git push --no-verify
+set -e
+
+echo "pre-push: suíte de segurança/regressão (backend, Postgres)..."
+python manage.py test tests --noinput
+
+echo "pre-push: OK — push liberado."
