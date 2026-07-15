@@ -19,7 +19,7 @@ services:
   tests:
     build: .
     command: >
-      sh -c "python -m coverage run manage.py test --noinput &&
+      sh -c "python -m coverage run manage.py test --settings=config.settings_test --noinput &&
              python -m coverage report"
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
