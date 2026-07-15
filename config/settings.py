@@ -138,10 +138,19 @@ SIMPLE_JWT = {
 }
 
 # CORS
+from corsheaders.defaults import default_headers  # noqa: E402
+
 CORS_ALLOWED_ORIGINS = os.getenv(
     'CORS_ALLOWED_ORIGINS', 'http://localhost:5173'
 ).split(',')
 CORS_ALLOW_CREDENTIALS = True  # obrigatório para HttpOnly cookie cross-port no mesmo hostname
+
+# Headers de tracing distribuído do Sentry (front→back) precisam ser permitidos
+# no preflight; sem isso o navegador bloqueia a requisição real (CORS error).
+CORS_ALLOW_HEADERS = (*default_headers, 'sentry-trace', 'baggage')
+
+# Deixa o front ler o ID de correlação da resposta.
+CORS_EXPOSE_HEADERS = ('X-Request-ID',)
 
 # Security headers (gerenciados pelo SecurityMiddleware do Django)
 SECURE_CONTENT_TYPE_NOSNIFF = True
