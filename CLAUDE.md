@@ -4,6 +4,19 @@ Exemplos de código detalhados em `.claude/rules/`.
 
 ---
 
+## Convenções de ambiente e ferramentas
+
+Antes de instalar dependências ou introduzir qualquer ferramenta, **detecte e siga o que o repositório já usa** — não traga alternativas em paralelo.
+
+- **Gerenciador de pacotes / lockfile**: o lockfile presente é a fonte da verdade. Use exatamente o gerenciador dele e **nunca** crie um segundo lockfile no mesmo projeto. Um projeto = um gerenciador = um lockfile.
+- **Ferramentas base** (runtime, banco de dados, test runner, formatador, linter): respeite a escolha já existente no repo antes de propor outra. Mudança de ferramenta base é decisão explícita, não efeito colateral de uma tarefa.
+- **Dependências reais vão declaradas**: se o código importa um pacote, ele tem que estar no arquivo de dependências — nunca depender de algo que só existe no ambiente local. Um build/instalação limpa (do zero) tem que funcionar.
+- **Config que varia por máquina/ambiente** fica em arquivo ignorado pelo git (ex.: `.env`); segredos nunca vão para o repositório.
+- **Paridade entre ambientes**: dev, CI e produção devem usar o mesmo motor/versões das peças críticas (ex.: mesmo banco de dados), para um teste verde significar a mesma coisa em todo lugar.
+- **Na dúvida, olhe antes de agir**: inspecione lockfiles, arquivos de config e o que já está instalado; só então decida. Se encontrar duplicidade/inconsistência, consolide em um só — não conviva com dois.
+
+---
+
 ## Models
 
 - Modelo de negócio: PK `UUIDField` com `db_column='xxx_id'`
