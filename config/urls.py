@@ -3,8 +3,10 @@ from django.contrib import admin
 from django.urls import path, include
 
 from apps.users.views import CustomTokenObtainPairView, CookieTokenRefreshView
+from config.observability import health_view
 
 urlpatterns = [
+    path('health/', health_view, name='health'),
     path(settings.ADMIN_URL, admin.site.urls),
     # Auth
     path('api/auth/login/', CustomTokenObtainPairView.as_view(), name='token_login'),

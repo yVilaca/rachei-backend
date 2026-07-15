@@ -32,6 +32,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'config.observability.RequestIDMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -195,27 +196,60 @@ WHATSAPP_BACKEND = os.getenv('WHATSAPP_BACKEND', 'apps.groups.whatsapp.ConsoleWh
 # URL base do frontend — usada nos convites WhatsApp
 APP_INVITE_URL = os.getenv('APP_INVITE_URL', 'https://rachei.app/cadastro')
 
-# Logging
+# Logging — estruturado (JSON em prod), com request_id e envio ao Better Stack.
+# Dev: console legível. Prod: JSON. Better Stack só quando o token está presente.
+BETTERSTACK_SOURCE_TOKEN = os.getenv('BETTERSTACK_SOURCE_TOKEN', '').strip()
+BETTERSTACK_HOST = os.getenv('BETTERSTACK_HOST', 'https://in.logs.betterstack.com').strip()
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'request_id': {'()': 'config.observability.RequestIDFilter'},
+    },
     'formatters': {
         'simple': {
-            'format': '[{levelname}] {name}: {message}',
+            'format': '[{levelname}] {name} {request_id}: {message}',
             'style': '{',
+        },
+        'json': {
+            '()': 'pythonjsonlogger.json.JsonFormatter',
+            'fmt': '%(asctime)s %(levelname)s %(name)s %(request_id)s %(message)s',
         },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'simple',
+            'filters': ['request_id'],
+            'formatter': 'simple' if DEBUG else 'json',
         },
     },
     'loggers': {
         'apps': {
             'handlers': ['console'],
-            'level': 'DEBUG' if DEBUG else 'WARNING',
+            'level': 'DEBUG' if DEBUG else 'INFO',
+            'propagate': False,
+        },
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'ERROR',
             'propagate': False,
         },
     },
 }
+
+# Envia logs ao Better Stack apenas se o token estiver configurado.
+if BETTERSTACK_SOURCE_TOKEN:
+    LOGGING['handlers']['betterstack'] = {
+        'class': 'logtail.LogtailHandler',
+        'source_token': BETTERSTACK_SOURCE_TOKEN,
+        'host': BETTERSTACK_HOST,
+        'filters': ['request_id'],
+        'level': 'INFO',
+    }
+    for _logger in ('apps', 'django.request'):
+        LOGGING['loggers'][_logger]['handlers'].append('betterstack')
+
+# ── Sentry (erros + performance) — no-op sem SENTRY_DSN ──────────────────────
+from config.observability import init_sentry  # noqa: E402
+init_sentry()
