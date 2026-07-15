@@ -17,3 +17,12 @@ urlpatterns = [
     path('api/', include('apps.debts.urls')),
     path('api/', include('apps.payments.urls')),
 ]
+
+# Rota de teste de observabilidade — SOMENTE em DEBUG (nunca em produção).
+# Levanta uma exceção real: exercita Sentry (stack trace) + Better Stack
+# (log ERROR de django.request com request_id).
+if settings.DEBUG:
+    def _trigger_error(request):
+        raise RuntimeError('Erro de teste do Rachei (observabilidade)')
+
+    urlpatterns += [path('sentry-debug/', _trigger_error)]
