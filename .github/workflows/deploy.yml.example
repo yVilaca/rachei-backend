@@ -1,0 +1,72 @@
+# TEMPLATE de deploy — INATIVO enquanto o nome termina em ".example".
+# Para ativar quando tiver a VPS: renomeie para "deploy.yml" e cadastre os
+# secrets (Settings → Secrets and variables → Actions).
+#
+# Fluxo profissional: só publica depois da CI verde → build da imagem →
+# envia pra VPS → migra → reinicia → smoke test → marca release no Sentry.
+#
+# Este mesmo fluxo (Docker) porta 1:1 para um Jenkinsfile no futuro.
+name: Deploy
+
+on:
+  workflow_dispatch: {}          # disparo manual (botão "Run workflow")
+  # Alternativa: deploy automático quando a CI passar na master:
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
+  #   branches: [master]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Só segue se a CI (testes) tiver passado.
+    # if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1) Build da imagem de produção e push pro GitHub Container Registry (ghcr.io).
+      - name: Login no ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # já existe, não precisa criar
+
+      - name: Build + push da imagem
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+
+      # 2) Deploy na VPS via SSH: puxa a nova imagem, migra e reinicia.
+      - name: Deploy na VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/rachei
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker image prune -f
+
+      # 3) Smoke test pós-deploy: se /health não responder 200, o deploy falha.
+      - name: Smoke test (/health)
+        run: |
+          curl -fsS --retry 5 --retry-delay 5 https://${{ secrets.APP_DOMAIN }}/health/ \
+            || { echo "Health check falhou"; exit 1; }
+
+      # 4) (Opcional) Marca a release no Sentry e associa os commits deste deploy.
+      # - name: Sentry release
+      #   uses: getsentry/action-release@v1
+      #   env:
+      #     SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      #     SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      #     SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+      #   with:
+      #     environment: production
+      #     version: ${{ github.sha }}

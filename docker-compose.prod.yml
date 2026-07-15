@@ -1,0 +1,46 @@
+# Produção — roda na VPS. Sobe o app Django (gunicorn) + Postgres.
+# É o MESMO alvo Docker que o pipeline de deploy usa (GitHub Actions hoje,
+# Jenkins depois) — só muda quem dispara.
+#
+# Uso na VPS:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Requer um arquivo .env.prod ao lado (NUNCA versionado) com os segredos reais.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # dados persistem entre reinícios
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  web:
+    # Imagem publicada pelo pipeline de deploy (troque pelo seu usuário/repo).
+    image: ghcr.io/yvilaca/rachei-backend:latest
+    restart: always
+    env_file: .env.prod
+    depends_on:
+      db:
+        condition: service_healthy
+    # Aplica migrations e sobe o gunicorn (logs no stdout → vão pro Better Stack).
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             gunicorn config.wsgi:application
+             --bind 0.0.0.0:8000 --workers 3 --timeout 60
+             --access-logfile - --error-logfile -"
+    expose:
+      - "8000"          # exposto ao reverse proxy (nginx/Caddy), não à internet
+    ports:
+      - "127.0.0.1:8000:8000"  # só localhost; o proxy publica via HTTPS
+
+volumes:
+  pgdata:
