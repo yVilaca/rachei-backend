@@ -22,6 +22,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView as BaseTokenObtainPairView
 
 from .models import AuditLog, PasswordResetCode, SmsVerification, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
+from .audit import log_event
 from .sms import send_sms
 from .serializers import (
     CustomTokenObtainPairSerializer,
@@ -40,11 +41,6 @@ REFRESH_COOKIE_NAME = 'rachei_refresh'
 _REFRESH_MAX_AGE = int(django_settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
 
 
-def _get_ip(request) -> str:
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    return (forwarded.split(',')[0].strip() or request.META.get('REMOTE_ADDR')) or ''
-
-
 def _set_refresh_cookie(response, token: str) -> None:
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
@@ -61,31 +57,10 @@ def _clear_refresh_cookie(response) -> None:
     response.delete_cookie(key=REFRESH_COOKIE_NAME, path='/api/auth/')
 
 
-_audit_logger = logging.getLogger('apps.audit')
-
-
 def _log(request, event: str, user=None, detail: dict | None = None) -> None:
-    ip = _get_ip(request)
-    try:
-        AuditLog.objects.create(
-            user=user,
-            event=event,
-            ip=ip,
-            user_agent=request.META.get('HTTP_USER_AGENT', '')[:256],
-            detail=detail or {},
-        )
-    except Exception:
-        pass  # audit nunca quebra o fluxo principal
+    """Auditoria de eventos de auth — delega ao helper compartilhado."""
+    log_event(request, event, user=user, detail=detail)
 
-    # Espelha o evento no fluxo de logs (Better Stack) — sem dados sensíveis.
-    try:
-        _audit_logger.info(
-            'audit.%s',
-            event,
-            extra={'audit_event': event, 'user_id': getattr(user, 'pk', None), 'ip': ip},
-        )
-    except Exception:
-        pass
 
 def _send_verification_sms(user) -> None:
     try:

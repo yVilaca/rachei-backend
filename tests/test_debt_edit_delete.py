@@ -84,3 +84,33 @@ class DebtLockedAfterPaymentTest(SecurityTestCase):
 
     def test_delete_blocked(self):
         self.assertEqual(self.vic.delete(DEBT.format(self.s.debt_id)).status_code, 400)
+
+
+class DebtAuditTest(SecurityTestCase):
+    """Editar/excluir dívida gera trilha de auditoria (AuditLog)."""
+
+    def setUp(self):
+        super().setUp()
+        self.s = self.build_scenario()
+        self.vic = self.api(self.s.vic_t)
+
+    def test_edit_records_audit(self):
+        from apps.users.models import AuditLog
+        self.vic.patch(DEBT.format(self.s.debt_id), {'description': 'Renomeada'}, format='json')
+        entry = AuditLog.objects.filter(event=AuditLog.DEBT_UPDATED).order_by('-created_at').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(str(entry.user_id), str(self.s.vic_id))
+        self.assertEqual(entry.detail.get('debt_id'), str(self.s.debt_id))
+
+    def test_delete_records_audit(self):
+        from apps.users.models import AuditLog
+        self.vic.delete(DEBT.format(self.s.debt_id))
+        entry = AuditLog.objects.filter(event=AuditLog.DEBT_DELETED).order_by('-created_at').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.detail.get('debt_id'), str(self.s.debt_id))
+
+    def test_failed_delete_is_not_audited(self):
+        from apps.users.models import AuditLog
+        # membro não-credor tenta excluir → 403, sem registro de exclusão
+        self.api(self.s.byt_t).delete(DEBT.format(self.s.debt_id))
+        self.assertFalse(AuditLog.objects.filter(event=AuditLog.DEBT_DELETED).exists())

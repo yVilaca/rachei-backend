@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.groups.models import Group, GroupMember
+from apps.users.models import AuditLog
+from apps.users.audit import log_event
 from .models import Debt, Installment
 from .serializers import (
     DespesaDetailSerializer,
@@ -120,17 +122,26 @@ class DespesaDetailView(generics.RetrieveAPIView):
             raise PermissionDenied(str(e))
         except ValueError as e:
             raise ValidationError(str(e))
+        log_event(
+            request, AuditLog.DEBT_UPDATED, user=request.user,
+            detail={'debt_id': str(despesa.pk), 'group_id': str(despesa.group_id)},
+        )
         atualizada = self.get_queryset().get(pk=despesa.pk)
         return Response(DespesaDetailSerializer(atualizada).data)
 
     def delete(self, request, *args, **kwargs):
         despesa = self.get_object()
+        debt_id, group_id = str(despesa.pk), str(despesa.group_id)
         try:
             excluir_despesa(despesa=despesa, ator=request.user)
         except PermissionError as e:
             raise PermissionDenied(str(e))
         except ValueError as e:
             raise ValidationError(str(e))
+        log_event(
+            request, AuditLog.DEBT_DELETED, user=request.user,
+            detail={'debt_id': debt_id, 'group_id': group_id},
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

@@ -305,6 +305,8 @@ class AuditLog(models.Model):
     TWO_FA_OFF = '2fa_off'
     PWD_RESET = 'pwd_reset'
     TOKEN_REFRESH = 'token_refresh'
+    DEBT_UPDATED = 'debt_updated'
+    DEBT_DELETED = 'debt_deleted'
 
     EVENT_CHOICES = [
         (LOGIN_OK, 'Login bem-sucedido'),
@@ -316,6 +318,8 @@ class AuditLog(models.Model):
         (TWO_FA_OFF, '2FA desativado'),
         (PWD_RESET, 'Senha redefinida'),
         (TOKEN_REFRESH, 'Token atualizado'),
+        (DEBT_UPDATED, 'Dívida editada'),
+        (DEBT_DELETED, 'Dívida excluída'),
     ]
 
     user = models.ForeignKey(
