@@ -11,18 +11,22 @@ from .helpers import SecurityTestCase
 User = get_user_model()
 
 
-class ReadOnlyDebtEndpointsTest(SecurityTestCase):
-    """Despesa e parcela são read-only: não há superfície de PATCH/PUT (405)."""
+class DebtScopeOnEditTest(SecurityTestCase):
+    """A edição de despesa não pode mover o recurso de escopo (grupo)."""
 
     def setUp(self):
         super().setUp()
         self.s = self.build_scenario()
         self.vic = self.api(self.s.vic_t)  # membro/credor legítimo
 
-    def test_patch_debt_not_allowed(self):
-        r = self.vic.patch(f'/api/despesas/{self.s.debt_id}/',
-                           {'group_id': self.s.atk_group_id}, format='json')
-        self.assertEqual(r.status_code, 405)
+    def test_patch_debt_cannot_change_group(self):
+        before = self.vic.get(f'/api/despesas/{self.s.debt_id}/').data['group_id']
+        r = self.vic.patch(f'/api/despesas/{self.s.debt_id}/', {
+            'description': 'Renomeada',
+            'group_id': self.s.atk_group_id,   # tentativa de mover de grupo — deve ser ignorada
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(str(r.data['group_id']), str(before))  # grupo não mudou
 
     def test_put_debt_not_allowed(self):
         r = self.vic.put(f'/api/despesas/{self.s.debt_id}/',
