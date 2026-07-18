@@ -43,11 +43,30 @@ class UserDetailSerializer(serializers.ModelSerializer):
 
 
 class UserFormSerializer(serializers.ModelSerializer):
-    """Atualização de perfil — apenas campos editáveis (phone excluído: requer re-verificação)."""
+    """
+    Atualização de perfil — apenas campos editáveis pelo dono.
+    `phone` fica de fora (exige re-verificação); `plan`/`is_staff` nunca entram.
+    `name` é gravado em first_name/last_name.
+    """
+    name = serializers.CharField(max_length=150, required=False)
 
     class Meta:
         model = User
-        fields = ('avatar_url', 'notif_cobracas', 'notif_confirmacoes', 'notif_lembretes')
+        fields = ('name', 'avatar_url', 'notif_cobracas', 'notif_confirmacoes', 'notif_lembretes')
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('Informe um nome.')
+        return value
+
+    def update(self, instance, validated_data):
+        name = validated_data.pop('name', None)
+        if name is not None:
+            parts = name.split(' ', 1)
+            instance.first_name = parts[0]
+            instance.last_name = parts[1] if len(parts) > 1 else ''
+        return super().update(instance, validated_data)
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):

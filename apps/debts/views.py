@@ -7,11 +7,12 @@ from apps.groups.models import Group, GroupMember
 from .models import Debt, Installment
 from .serializers import (
     DespesaDetailSerializer,
+    DespesaEditSerializer,
     DespesaFormSerializer,
     DespesaListSerializer,
     ParcelaListSerializer,
 )
-from .services import criar_despesa
+from .services import criar_despesa, editar_despesa, excluir_despesa
 
 _grupos_do_user = lambda user: GroupMember.objects.filter(
     user=user, status=GroupMember.STATUS_ATIVO
@@ -82,7 +83,11 @@ class DespesaCreateView(APIView):
 
 
 class DespesaDetailView(generics.RetrieveAPIView):
-    """GET /api/despesas/{id}/ — detalhe com parcelas."""
+    """
+    GET    /api/despesas/{id}/ — detalhe com parcelas
+    PATCH  /api/despesas/{id}/ — editar (só o credor; valores só se ninguém pagou)
+    DELETE /api/despesas/{id}/ — excluir (só o credor; só se ninguém pagou)
+    """
     serializer_class = DespesaDetailSerializer
 
     def get_queryset(self):
@@ -96,6 +101,37 @@ class DespesaDetailView(generics.RetrieveAPIView):
                 'installments__charge_link',
             )
         )
+
+    def patch(self, request, *args, **kwargs):
+        despesa = self.get_object()  # 404 se não for membro do grupo
+        serializer = DespesaEditSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            editar_despesa(
+                despesa=despesa,
+                editor=request.user,
+                description=data['description'],
+                total_amount_cents=data.get('total_amount_cents'),
+                split_type=data.get('split_type'),
+                parcelas_data=data.get('parcelas'),
+            )
+        except PermissionError as e:
+            raise PermissionDenied(str(e))
+        except ValueError as e:
+            raise ValidationError(str(e))
+        atualizada = self.get_queryset().get(pk=despesa.pk)
+        return Response(DespesaDetailSerializer(atualizada).data)
+
+    def delete(self, request, *args, **kwargs):
+        despesa = self.get_object()
+        try:
+            excluir_despesa(despesa=despesa, ator=request.user)
+        except PermissionError as e:
+            raise PermissionDenied(str(e))
+        except ValueError as e:
+            raise ValidationError(str(e))
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ParcelaDetailView(generics.RetrieveAPIView):

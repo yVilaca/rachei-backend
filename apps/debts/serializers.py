@@ -66,12 +66,21 @@ class DespesaDetailSerializer(serializers.ModelSerializer):
     paid_by = UserListSerializer(read_only=True)
     group_name = serializers.CharField(source='group.name', read_only=True)
     parcelas = ParcelaListSerializer(source='installments', many=True, read_only=True)
+    editavel = serializers.SerializerMethodField()
 
     class Meta:
         model = Debt
         fields = (
             'id', 'group_id', 'group_name', 'description', 'total_amount_cents',
-            'split_type', 'paid_by', 'created_at', 'parcelas',
+            'split_type', 'paid_by', 'created_at', 'parcelas', 'editavel',
+        )
+
+    def get_editavel(self, obj):
+        """Valores/exclusão liberados só se ninguém (fora o credor) saiu de pendente."""
+        return all(
+            inst.status == Installment.STATUS_PENDING
+            for inst in obj.installments.all()
+            if inst.debtor_id != obj.paid_by_id
         )
 
 
@@ -105,4 +114,32 @@ class DespesaFormSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {'parcelas': 'Soma das parcelas não confere com o total da despesa.'}
                 )
+        return data
+
+
+class DespesaEditSerializer(serializers.Serializer):
+    """
+    Edição de despesa. `description` sempre; valores/divisão/parcelas são
+    opcionais — enviados juntos apenas quando a dívida ainda é alterável.
+    """
+    description = serializers.CharField(max_length=255)
+    total_amount_cents = serializers.IntegerField(min_value=1, required=False)
+    split_type = serializers.ChoiceField(choices=Debt.SPLIT_CHOICES, required=False)
+    parcelas = ParcelaInputSerializer(many=True, required=False)
+
+    def validate(self, data):
+        parcelas = data.get('parcelas')
+        if parcelas is not None:
+            if not parcelas:
+                raise serializers.ValidationError({'parcelas': 'Informe ao menos uma parcela.'})
+            if data.get('total_amount_cents') is None or data.get('split_type') is None:
+                raise serializers.ValidationError(
+                    'Para alterar valores, envie total_amount_cents e split_type.'
+                )
+            if data['split_type'] == Debt.SPLIT_CUSTOM:
+                soma = sum(p['amount_cents'] for p in parcelas)
+                if soma != data['total_amount_cents']:
+                    raise serializers.ValidationError(
+                        {'parcelas': 'Soma das parcelas não confere com o total da despesa.'}
+                    )
         return data

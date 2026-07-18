@@ -262,6 +262,11 @@ class MeView(generics.RetrieveUpdateAPIView):
             return UserFormSerializer
         return UserDetailSerializer
 
+    def update(self, request, *args, **kwargs):
+        # Valida/salva com o UserFormSerializer e devolve o perfil completo.
+        super().update(request, *args, **kwargs)
+        return Response(UserDetailSerializer(self.get_object()).data)
+
 
 class ForgotPasswordView(APIView):
     """POST /api/auth/password/forgot/ — envia código de recuperação por e-mail."""
