@@ -146,6 +146,28 @@ class SettleUpTest(SecurityTestCase):
         r = self.api(self.s.mb3_t).post(_rejeitar(prop.data['id']), format='json')
         self.assertEqual(r.status_code, 404)
 
+    # ── detalhamento ──────────────────────────────────────────────────────────
+    def test_detalhe_itemiza_os_dois_sentidos(self):
+        r = self.vic.get(f'{ACERTAR}detalhe/?pessoa={int(self.s.byt_id)}')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data['total_recebe'], 5000)  # Jantar (byt deve à vic)
+        self.assertEqual(r.data['total_paga'], 4000)    # Uber (vic deve a byt)
+        self.assertEqual(r.data['saldo_cents'], 1000)
+        self.assertTrue(r.data['compensavel'])
+        descr_recebe = {i['descricao'] for i in r.data['voce_recebe']}
+        descr_paga = {i['descricao'] for i in r.data['voce_paga']}
+        self.assertEqual(descr_recebe, {'Jantar'})
+        self.assertEqual(descr_paga, {'Uber'})
+        self.assertEqual(r.data['voce_recebe'][0]['grupo'], 'Grupo Vitima')
+
+    def test_detalhe_pessoa_obrigatorio(self):
+        r = self.vic.get(f'{ACERTAR}detalhe/')
+        self.assertEqual(r.status_code, 400)
+
+    def test_detalhe_requires_auth(self):
+        r = self.api().get(f'{ACERTAR}detalhe/?pessoa={int(self.s.byt_id)}')
+        self.assertEqual(r.status_code, 401)
+
     # ── auditoria / auth ──────────────────────────────────────────────────────
     def test_acerto_e_auditado(self):
         prop = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')

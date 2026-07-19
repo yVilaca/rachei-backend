@@ -186,6 +186,54 @@ def resumo_acerto(*, user):
     return {'pessoas': pessoas, 'a_confirmar': a_confirmar}
 
 
+def detalhe_acerto(*, user, outro_id):
+    """
+    Itemiza a compensação entre `user` e `outro_id`: as parcelas pendentes nos
+    dois sentidos (com descrição e grupo) e os totais/saldo líquido.
+    """
+    User = get_user_model()
+    outro = User.objects.filter(pk=outro_id).first()
+    if outro is None:
+        raise ValueError('Pessoa não encontrada.')
+
+    active = _active_group_ids(user)
+
+    def _itens(credor, devedor):
+        qs = (
+            Installment.objects
+            .filter(
+                debt__paid_by=credor, debtor=devedor,
+                status=Installment.STATUS_PENDING, debt__group_id__in=active,
+            )
+            .select_related('debt', 'debt__group')
+            .order_by('debt__created_at')
+        )
+        return [
+            {
+                'id': str(i.id),
+                'descricao': i.debt.description,
+                'grupo': i.debt.group.name,
+                'valor_cents': i.amount_cents,
+            }
+            for i in qs
+        ]
+
+    voce_recebe = _itens(credor=user, devedor=outro)   # o que `outro` deve a você
+    voce_paga = _itens(credor=outro, devedor=user)      # o que você deve a `outro`
+    total_recebe = sum(i['valor_cents'] for i in voce_recebe)
+    total_paga = sum(i['valor_cents'] for i in voce_paga)
+
+    return {
+        'pessoa': {'id': outro.pk, 'name': outro.get_full_name() or outro.username},
+        'voce_recebe': voce_recebe,
+        'voce_paga': voce_paga,
+        'total_recebe': total_recebe,
+        'total_paga': total_paga,
+        'saldo_cents': total_recebe - total_paga,
+        'compensavel': total_recebe > 0 and total_paga > 0,
+    }
+
+
 def _tem_mutua(de, para_id):
     """Há dívida mútua (nos dois sentidos) entre `de` e `para_id` em algum grupo?"""
     grupos = _pares_pendentes(de).get(para_id, {})

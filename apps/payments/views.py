@@ -21,6 +21,7 @@ from .services import (
     confirmar_acerto,
     confirmar_pagamento,
     declarar_pagamento,
+    detalhe_acerto,
     gerar_link_cobranca,
     propor_acerto,
     rejeitar_acerto,
@@ -384,6 +385,19 @@ class AcertoView(APIView):
             detail={'acerto_id': str(acerto.id), 'para_id': str(para_id)},
         )
         return Response({'id': str(acerto.id)}, status=status.HTTP_201_CREATED)
+
+
+class AcertoDetalheView(APIView):
+    """GET /api/acertar/detalhe/?pessoa=<id> — itemiza a compensação com uma pessoa."""
+
+    def get(self, request):
+        pessoa = request.query_params.get('pessoa')
+        if not pessoa:
+            raise ValidationError({'pessoa': 'Campo obrigatório.'})
+        try:
+            return Response(detalhe_acerto(user=request.user, outro_id=pessoa))
+        except ValueError as e:
+            raise NotFound(str(e))
 
 
 def _get_acerto_destinatario(request, pk):
