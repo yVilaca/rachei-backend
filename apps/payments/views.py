@@ -376,21 +376,42 @@ class AcertoView(APIView):
         para_id = request.data.get('para_id')
         if not para_id:
             raise ValidationError({'para_id': 'Campo obrigatório.'})
+        parcela_ids = request.data.get('parcela_ids')  # opcional; None = todas
         try:
-            acerto = propor_acerto(de=request.user, para_id=para_id)
+            acerto = propor_acerto(
+                de=request.user, para_id=para_id, parcela_ids=parcela_ids,
+            )
         except ValueError as e:
             raise ValidationError(str(e))
         log_event(
             request, AuditLog.SETTLE_DECLARED, user=request.user,
-            detail={'acerto_id': str(acerto.id), 'para_id': str(para_id)},
+            detail={
+                'acerto_id': str(acerto.id), 'para_id': str(para_id),
+                'parcelas': acerto.parcelas.count(),
+            },
         )
         return Response({'id': str(acerto.id)}, status=status.HTTP_201_CREATED)
 
 
 class AcertoDetalheView(APIView):
-    """GET /api/acertar/detalhe/?pessoa=<id> — itemiza a compensação com uma pessoa."""
+    """
+    GET /api/acertar/detalhe/?pessoa=<id>  — parcelas candidatas com a pessoa (ao propor).
+    GET /api/acertar/detalhe/?acerto=<id>  — parcelas selecionadas na proposta (ao revisar).
+    """
 
     def get(self, request):
+        acerto_id = request.query_params.get('acerto')
+        if acerto_id:
+            acerto = (
+                Acerto.objects
+                .filter(pk=acerto_id)
+                .filter(Q(de=request.user) | Q(para=request.user))
+                .first()
+            )
+            if acerto is None:
+                raise NotFound('Acerto não encontrado.')
+            return Response(detalhe_acerto(user=request.user, acerto=acerto))
+
         pessoa = request.query_params.get('pessoa')
         if not pessoa:
             raise ValidationError({'pessoa': 'Campo obrigatório.'})

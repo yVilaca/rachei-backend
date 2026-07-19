@@ -82,6 +82,55 @@ class SettleUpTest(SecurityTestCase):
         r = self.vic.post(ACERTAR, {}, format='json')
         self.assertEqual(r.status_code, 400)
 
+    def test_propor_com_selecao_valida(self):
+        r = self.vic.post(ACERTAR, {
+            'para_id': int(self.s.byt_id),
+            'parcela_ids': [str(self.s.parcela_byt), str(self.uber_parcela)],
+        }, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(Acerto.objects.get(pk=r.data['id']).parcelas.count(), 2)
+
+    def test_propor_selecao_de_um_lado_so_falha(self):
+        # só a dívida "Uber" (um sentido) → sem mutualidade na seleção → 400
+        r = self.vic.post(ACERTAR, {
+            'para_id': int(self.s.byt_id),
+            'parcela_ids': [str(self.uber_parcela)],
+        }, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_propor_selecao_com_parcela_alheia_falha(self):
+        # parcela do mb3 não é candidata do par vic↔byt
+        r = self.vic.post(ACERTAR, {
+            'para_id': int(self.s.byt_id),
+            'parcela_ids': [str(self.s.parcela_byt), str(self.s.parcela_mb3)],
+        }, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_confirmar_quita_apenas_selecionadas(self):
+        # Cria uma 2ª dívida onde byt deve à vic (Cinema 2000). Seleciona só
+        # Jantar + Uber; Cinema deve permanecer pendente.
+        d = self.vic.post('/api/despesas/', {
+            'grupo_id': self.s.group_id, 'description': 'Cinema', 'total_amount_cents': 2000,
+            'split_type': 'custom',
+            'parcelas': [{'debtor_id': int(self.s.byt_id), 'amount_cents': 2000}],
+        }, format='json')
+        cinema_parcela = d.data['parcelas'][0]['id']
+
+        prop = self.vic.post(ACERTAR, {
+            'para_id': int(self.s.byt_id),
+            'parcela_ids': [str(self.s.parcela_byt), str(self.uber_parcela)],
+        }, format='json')
+        r = self.byt.post(_confirmar(prop.data['id']), format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+
+        self.assertEqual(Installment.objects.get(pk=self.s.parcela_byt).status, Installment.STATUS_PAID)
+        self.assertEqual(Installment.objects.get(pk=self.uber_parcela).status, Installment.STATUS_PAID)
+        # Cinema NÃO foi selecionada → segue pendente
+        self.assertEqual(Installment.objects.get(pk=cinema_parcela).status, Installment.STATUS_PENDING)
+        # líquido sobre as selecionadas: 5000 - 4000 = 1000
+        d = Debt.objects.get(description='Acerto de contas')
+        self.assertEqual(d.total_amount_cents, 1000)
+
     # ── confirmar (compensação) ──────────────────────────────────────────────
     def test_confirmar_compensa_e_cria_divida_liquida(self):
         prop = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')
@@ -189,6 +238,23 @@ class SettleUpTest(SecurityTestCase):
     def test_detalhe_requires_auth(self):
         r = self.api().get(f'{ACERTAR}detalhe/?pessoa={int(self.s.byt_id)}')
         self.assertEqual(r.status_code, 401)
+
+    def test_detalhe_por_acerto_mostra_selecao(self):
+        prop = self.vic.post(ACERTAR, {
+            'para_id': int(self.s.byt_id),
+            'parcela_ids': [str(self.uber_parcela), str(self.s.parcela_byt)],
+        }, format='json')
+        # destinatário (byt) revisa a seleção da proposta
+        r = self.byt.get(f"{ACERTAR}detalhe/?acerto={prop.data['id']}")
+        self.assertEqual(r.status_code, 200, r.content)
+        # da perspectiva de byt: recebe a Uber (byt credor), paga o Jantar (byt devedor)
+        self.assertEqual({i['descricao'] for i in r.data['voce_recebe']}, {'Uber'})
+        self.assertEqual({i['descricao'] for i in r.data['voce_paga']}, {'Jantar'})
+
+    def test_detalhe_por_acerto_alheio_404(self):
+        prop = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')
+        r = self.api(self.s.mb3_t).get(f"{ACERTAR}detalhe/?acerto={prop.data['id']}")
+        self.assertEqual(r.status_code, 404)
 
     # ── auditoria / auth ──────────────────────────────────────────────────────
     def test_acerto_e_auditado(self):

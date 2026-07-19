@@ -60,6 +60,10 @@ class Acerto(models.Model):
         max_length=12, choices=STATUS_CHOICES, default=STATUS_PENDING,
         db_index=True, db_column='act_status',
     )
+    parcelas = models.ManyToManyField(
+        'debts.Installment', related_name='acertos', db_table='acerto_parcelas',
+        blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_column='act_criado_em')
     resolved_at = models.DateTimeField(null=True, blank=True, db_column='act_resolvido_em')
 

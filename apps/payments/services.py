@@ -186,40 +186,69 @@ def resumo_acerto(*, user):
     return {'pessoas': pessoas, 'a_confirmar': a_confirmar}
 
 
-def detalhe_acerto(*, user, outro_id):
-    """
-    Itemiza a compensação entre `user` e `outro_id`: as parcelas pendentes nos
-    dois sentidos (com descrição e grupo) e os totais/saldo líquido.
-    """
-    User = get_user_model()
-    outro = User.objects.filter(pk=outro_id).first()
-    if outro is None:
-        raise ValueError('Pessoa não encontrada.')
-
+def _candidatas(user, outro):
+    """Parcelas pendentes entre `user` e `outro` (nos dois sentidos), em grupos ativos."""
     active = _active_group_ids(user)
+    return (
+        Installment.objects
+        .filter(status=Installment.STATUS_PENDING, debt__group_id__in=active)
+        .filter(Q(debt__paid_by=user, debtor=outro) | Q(debt__paid_by=outro, debtor=user))
+        .select_related('debt', 'debt__group')
+        .order_by('debt__created_at')
+    )
 
-    def _itens(credor, devedor):
-        qs = (
-            Installment.objects
-            .filter(
-                debt__paid_by=credor, debtor=devedor,
-                status=Installment.STATUS_PENDING, debt__group_id__in=active,
-            )
+
+def _itemizar(installments, user):
+    """Separa as parcelas em 'você recebe' (user é credor) e 'você paga' (user é devedor)."""
+    recebe, paga = [], []
+    for i in installments:
+        item = {
+            'id': str(i.id),
+            'descricao': i.debt.description,
+            'grupo': i.debt.group.name,
+            'valor_cents': i.amount_cents,
+        }
+        (recebe if i.debt.paid_by_id == user.pk else paga).append(item)
+    return recebe, paga
+
+
+def _tem_mutua_itens(installments, user):
+    """Há, por grupo, parcelas nos dois sentidos entre `user` e a contraparte?"""
+    porg = {}
+    for i in installments:
+        r_p = porg.setdefault(i.debt.group_id, [0, 0])
+        r_p[0 if i.debt.paid_by_id == user.pk else 1] += i.amount_cents
+    return any(a > 0 and b > 0 for a, b in porg.values())
+
+
+def _resolver_pessoa(pk):
+    User = get_user_model()
+    u = User.objects.filter(pk=pk).first()
+    if u is None:
+        raise ValueError('Pessoa não encontrada.')
+    return u
+
+
+def detalhe_acerto(*, user, outro_id=None, acerto=None):
+    """
+    Itemiza uma compensação (parcelas dos dois sentidos + totais/saldo), da
+    perspectiva de `user`. Por `outro_id`: todas as parcelas candidatas com a
+    pessoa (usado ao propor). Por `acerto`: só as parcelas selecionadas na
+    proposta (usado ao revisar/confirmar).
+    """
+    if acerto is not None:
+        outro = acerto.de if user.pk == acerto.para_id else acerto.para
+        installments = list(
+            acerto.parcelas
+            .filter(status=Installment.STATUS_PENDING)
             .select_related('debt', 'debt__group')
             .order_by('debt__created_at')
         )
-        return [
-            {
-                'id': str(i.id),
-                'descricao': i.debt.description,
-                'grupo': i.debt.group.name,
-                'valor_cents': i.amount_cents,
-            }
-            for i in qs
-        ]
+    else:
+        outro = _resolver_pessoa(outro_id)
+        installments = list(_candidatas(user, outro))
 
-    voce_recebe = _itens(credor=user, devedor=outro)   # o que `outro` deve a você
-    voce_paga = _itens(credor=outro, devedor=user)      # o que você deve a `outro`
+    voce_recebe, voce_paga = _itemizar(installments, user)
     total_recebe = sum(i['valor_cents'] for i in voce_recebe)
     total_paga = sum(i['valor_cents'] for i in voce_paga)
 
@@ -234,33 +263,42 @@ def detalhe_acerto(*, user, outro_id):
     }
 
 
-def _tem_mutua(de, para_id):
-    """Há dívida mútua (nos dois sentidos) entre `de` e `para_id` em algum grupo?"""
-    grupos = _pares_pendentes(de).get(para_id, {})
-    return any(a > 0 and b > 0 for a, b in grupos.values())
-
-
 @transaction.atomic
-def propor_acerto(*, de, para_id):
-    """Cria (ou reutiliza) uma proposta de compensação pendente de `de` para `para_id`."""
+def propor_acerto(*, de, para_id, parcela_ids=None):
+    """
+    Cria (ou reutiliza) uma proposta de compensação pendente de `de` para `para_id`,
+    com as parcelas a abater. `parcela_ids=None` seleciona todas as candidatas.
+    """
     if str(de.pk) == str(para_id):
         raise ValueError('Não é possível acertar consigo mesmo.')
-    if not _tem_mutua(de, para_id):
-        raise ValueError('Não há dívidas mútuas para compensar com esta pessoa.')
+    para = _resolver_pessoa(para_id)
+
+    candidatas = _candidatas(de, para)
+    if parcela_ids is not None:
+        ids = {str(i) for i in parcela_ids}
+        selecionadas = [i for i in candidatas if str(i.id) in ids]
+        if len(selecionadas) != len(ids):
+            raise ValueError('Seleção inválida de parcelas.')
+    else:
+        selecionadas = list(candidatas)
+
+    if not _tem_mutua_itens(selecionadas, de):
+        raise ValueError('Selecione dívidas nos dois sentidos para compensar.')
 
     existente = Acerto.objects.filter(
         de=de, para_id=para_id, status=Acerto.STATUS_PENDING,
     ).first()
-    if existente:
-        return existente
-    return Acerto.objects.create(de=de, para_id=para_id)
+    acerto = existente or Acerto.objects.create(de=de, para_id=para_id)
+    acerto.parcelas.set(selecionadas)  # substitui a seleção
+    return acerto
 
 
 @transaction.atomic
 def confirmar_acerto(*, acerto, quem):
     """
-    A outra parte confirma. Compensa as dívidas mútuas por grupo: quita as
-    parcelas dos dois sentidos e cria uma única dívida líquida com o saldo.
+    A outra parte confirma. Compensa, por grupo, apenas as parcelas selecionadas
+    na proposta que ainda estejam pendentes: quita-as (marca como pagas) e cria
+    uma única dívida líquida com o saldo remanescente.
     """
     if quem.pk != acerto.para_id:
         raise PermissionError('Apenas quem recebeu a proposta pode confirmar.')
@@ -270,34 +308,33 @@ def confirmar_acerto(*, acerto, quem):
     de, para = acerto.de, acerto.para
     now = timezone.now()
 
-    # Trava as parcelas pendentes entre os dois (nos dois sentidos) antes de somar.
-    # Serializa confirmações concorrentes: uma proposta cruzada confirmada ao mesmo
-    # tempo espera esta trava e, ao seguir, relê o estado já compensado (vira no-op),
-    # evitando criar a dívida líquida em duplicidade.
-    active = _active_group_ids(de)
-    list(
+    # Trava e relê as parcelas selecionadas ainda pendentes. Serializa confirmações
+    # concorrentes: uma proposta cruzada confirmada ao mesmo tempo espera esta trava
+    # e, ao seguir, encontra as parcelas já quitadas (vira no-op), evitando criar a
+    # dívida líquida em duplicidade.
+    sel_ids = list(acerto.parcelas.values_list('pk', flat=True))
+    parcelas = list(
         Installment.objects.select_for_update(of=('self',))
-        .filter(status=Installment.STATUS_PENDING, debt__group_id__in=active)
-        .filter(Q(debt__paid_by=de, debtor=para) | Q(debt__paid_by=para, debtor=de))
-        .values_list('pk', flat=True)
+        .filter(pk__in=sel_ids, status=Installment.STATUS_PENDING)
+        .select_related('debt')
     )
 
-    pares = _pares_pendentes(de)  # relido sob a trava: [recebo_de_para, devo_a_para]
-    grupos = pares.get(para.pk, {})
+    # Agrupa por grupo e sentido (do ponto de vista de `de`).
+    porg = {}  # group_id -> {'recebo': [inst], 'devo': [inst]}
+    for i in parcelas:
+        b = porg.setdefault(i.debt.group_id, {'recebo': [], 'devo': []})
+        b['recebo' if i.debt.paid_by_id == de.pk else 'devo'].append(i)
 
-    for grupo_id, (recebo, devo) in grupos.items():
+    for grupo_id, b in porg.items():
+        recebo = sum(i.amount_cents for i in b['recebo'])
+        devo = sum(i.amount_cents for i in b['devo'])
         if recebo <= 0 or devo <= 0:
-            continue  # sem mutualidade neste grupo — não compensa
+            continue  # sem mutualidade na seleção deste grupo — não compensa
 
-        # Quita (por compensação) as parcelas pendentes dos dois sentidos no grupo
-        Installment.objects.filter(
-            debt__group_id=grupo_id, status=Installment.STATUS_PENDING,
-            debt__paid_by=de, debtor=para,
-        ).update(status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now)
-        Installment.objects.filter(
-            debt__group_id=grupo_id, status=Installment.STATUS_PENDING,
-            debt__paid_by=para, debtor=de,
-        ).update(status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now)
+        ids = [i.pk for i in b['recebo'] + b['devo']]
+        Installment.objects.filter(pk__in=ids).update(
+            status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now,
+        )
 
         liquido = recebo - devo  # >0: para deve a de; <0: de deve a para
         if liquido != 0:
