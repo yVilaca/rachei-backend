@@ -64,6 +64,11 @@ class Acerto(models.Model):
         'debts.Installment', related_name='acertos', db_table='acerto_parcelas',
         blank=True,
     )
+    # Parcelas efetivamente quitadas por esta compensação (trilha de auditoria).
+    parcelas_quitadas = models.ManyToManyField(
+        'debts.Installment', related_name='quitacoes_acerto',
+        db_table='acerto_parcelas_quitadas', blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_column='act_criado_em')
     resolved_at = models.DateTimeField(null=True, blank=True, db_column='act_resolvido_em')
 

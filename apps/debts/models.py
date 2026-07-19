@@ -73,6 +73,16 @@ class Installment(models.Model):
         max_length=25, choices=STATUS_CHOICES, default=STATUS_PENDING,
         db_column='pcl_status', db_index=True,
     )
+    PAID_VIA_PAYMENT = 'payment'
+    PAID_VIA_COMPENSATION = 'compensation'
+    PAID_VIA_CHOICES = [
+        (PAID_VIA_PAYMENT, 'Pagamento'),
+        (PAID_VIA_COMPENSATION, 'Compensação'),
+    ]
+    paid_via = models.CharField(
+        max_length=12, choices=PAID_VIA_CHOICES, default=PAID_VIA_PAYMENT,
+        db_column='pcl_forma_quitacao',
+    )
     paid_at = models.DateTimeField(null=True, blank=True, db_column='pcl_pago_em')
     confirmed_at = models.DateTimeField(null=True, blank=True, db_column='pcl_confirmado_em')
 

@@ -123,43 +123,62 @@ class SettleUpTest(SecurityTestCase):
         r = self.byt.post(_confirmar(prop.data['id']), format='json')
         self.assertEqual(r.status_code, 200, r.content)
 
-        self.assertEqual(Installment.objects.get(pk=self.s.parcela_byt).status, Installment.STATUS_PAID)
+        # Uber (4000) totalmente abatida
         self.assertEqual(Installment.objects.get(pk=self.uber_parcela).status, Installment.STATUS_PAID)
         # Cinema NÃO foi selecionada → segue pendente
         self.assertEqual(Installment.objects.get(pk=cinema_parcela).status, Installment.STATUS_PENDING)
-        # líquido sobre as selecionadas: 5000 - 4000 = 1000
-        d = Debt.objects.get(description='Acerto de contas')
-        self.assertEqual(d.total_amount_cents, 1000)
+        # não cria dívida nova
+        self.assertFalse(Debt.objects.filter(description='Acerto de contas').exists())
+        # Jantar (5000) tinha só 4000 abatível → resíduo de 1000 segue pendente na própria parcela
+        jantar = Installment.objects.get(pk=self.s.parcela_byt)
+        self.assertEqual(jantar.status, Installment.STATUS_PENDING)
+        self.assertEqual(jantar.amount_cents, 1000)
 
     # ── confirmar (compensação) ──────────────────────────────────────────────
-    def test_confirmar_compensa_e_cria_divida_liquida(self):
+    def test_confirmar_abate_selecionadas_sem_criar_divida(self):
         prop = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')
         acerto_id = prop.data['id']
         r = self.byt.post(_confirmar(acerto_id), format='json')
         self.assertEqual(r.status_code, 200, r.content)
 
-        # ambos os sentidos foram quitados
+        # Não cria dívida "Acerto de contas"
+        self.assertFalse(Debt.objects.filter(description='Acerto de contas').exists())
+
+        # Uber (4000) foi abatida por completo
+        uber = Installment.objects.get(pk=self.uber_parcela)
+        self.assertEqual(uber.status, Installment.STATUS_PAID)
+        self.assertEqual(uber.paid_via, Installment.PAID_VIA_COMPENSATION)
+
+        # Jantar (5000): 4000 abatidos, 1000 de resíduo segue pendente na parcela original
+        jantar = Installment.objects.get(pk=self.s.parcela_byt)
+        self.assertEqual(jantar.status, Installment.STATUS_PENDING)
+        self.assertEqual(jantar.amount_cents, 1000)
+
+        # o total da dívida Jantar continua íntegro (1000 pendente + 4000 pago + 5000 mb3)
+        jantar_debt = jantar.debt
         self.assertEqual(
-            Installment.objects.get(pk=self.s.parcela_byt).status, Installment.STATUS_PAID
+            sum(jantar_debt.installments.values_list('amount_cents', flat=True)), 10000
         )
-        self.assertEqual(
-            Installment.objects.get(pk=self.uber_parcela).status, Installment.STATUS_PAID
-        )
-        # sobra UMA dívida líquida de 1000, byt devedor → vítima credora
-        liquida = Debt.objects.filter(description='Acerto de contas')
-        self.assertEqual(liquida.count(), 1)
-        d = liquida.first()
-        self.assertEqual(d.total_amount_cents, 1000)
-        self.assertEqual(d.paid_by_id, int(self.s.vic_id))
-        parc = d.installments.get()
-        self.assertEqual(parc.debtor_id, int(self.s.byt_id))
-        self.assertEqual(parc.amount_cents, 1000)
-        self.assertEqual(parc.status, Installment.STATUS_PENDING)
+
         # mb3 (unilateral) intocado
         self.assertEqual(
             Installment.objects.get(pk=self.s.parcela_mb3).status, Installment.STATUS_PENDING
         )
         self.assertEqual(Acerto.objects.get(pk=acerto_id).status, Acerto.STATUS_CONFIRMED)
+
+    def test_compensacao_tem_vinculo_de_auditoria(self):
+        prop = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')
+        self.byt.post(_confirmar(prop.data['id']), format='json')
+        acerto = Acerto.objects.get(pk=prop.data['id'])
+        # as parcelas quitadas por compensação estão ligadas ao acerto...
+        quitadas = list(acerto.parcelas_quitadas.all())
+        self.assertEqual(len(quitadas), 2)  # Uber (4000) + parte abatida do Jantar (4000)
+        for p in quitadas:
+            self.assertEqual(p.status, Installment.STATUS_PAID)
+            self.assertEqual(p.paid_via, Installment.PAID_VIA_COMPENSATION)
+        # ...e a partir da parcela dá para ver por qual acerto foi quitada
+        uber = Installment.objects.get(pk=self.uber_parcela)
+        self.assertEqual(uber.quitacoes_acerto.get().id, acerto.id)
 
     def test_apenas_destinatario_confirma(self):
         prop = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')
@@ -179,27 +198,22 @@ class SettleUpTest(SecurityTestCase):
         r = self.byt.post(_confirmar(prop.data['id']), format='json')
         self.assertEqual(r.status_code, 400)  # já resolvido
 
-    def test_propostas_cruzadas_nao_duplicam_compensacao(self):
-        # Ambos propõem um ao outro; ambos confirmam. Deve sobrar UMA dívida líquida
-        # e a proposta cruzada é resolvida automaticamente (não fica pendente).
+    def test_proposta_reversa_bloqueada_e_revisavel(self):
+        # vic propõe a byt. Quando byt tenta propor a vic, recebe 409 apontando a
+        # proposta existente (para revisar), em vez de criar uma concorrente.
         a = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')
         b = self.byt.post(ACERTAR, {'para_id': int(self.s.vic_id)}, format='json')
+        self.assertEqual(b.status_code, 409, b.content)
+        self.assertEqual(b.data['acerto_id'], a.data['id'])
+        # só existe uma proposta pendente entre os dois
+        self.assertEqual(Acerto.objects.filter(status='pending').count(), 1)
 
-        r1 = self.byt.post(_confirmar(a.data['id']), format='json')
-        self.assertEqual(r1.status_code, 200, r1.content)
-        # a proposta cruzada de byt→vic já foi resolvida junto
-        self.assertEqual(Acerto.objects.get(pk=b.data['id']).status, Acerto.STATUS_CONFIRMED)
-
-        # vic tenta confirmar a proposta (já resolvida) → 400, nada muda
-        r2 = self.vic.post(_confirmar(b.data['id']), format='json')
-        self.assertEqual(r2.status_code, 400)
-
-        liquidas = Debt.objects.filter(description='Acerto de contas')
-        self.assertEqual(liquidas.count(), 1)
-        d = liquidas.first()
-        self.assertEqual(d.total_amount_cents, 1000)
-        self.assertEqual(d.paid_by_id, int(self.s.vic_id))
-        self.assertEqual(d.installments.get().debtor_id, int(self.s.byt_id))
+        # byt revisa e confirma a proposta existente → compensação acontece uma vez
+        r = self.byt.post(_confirmar(a.data['id']), format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(Debt.objects.filter(description='Acerto de contas').exists())
+        # resíduo de 1000 no Jantar
+        self.assertEqual(Installment.objects.get(pk=self.s.parcela_byt).amount_cents, 1000)
 
     # ── rejeitar ────────────────────────────────────────────────────────────
     def test_rejeitar_nao_altera_parcelas(self):

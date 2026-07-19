@@ -5,9 +5,17 @@ from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.debts.models import Debt, Installment
+from apps.debts.models import Installment
 from apps.groups.models import GroupMember
 from .models import Acerto, ChargeLink, Comprovante
+
+
+class NegociacaoExistente(Exception):
+    """Já existe uma proposta da outra pessoa para você — deve ser revisada, não duplicada."""
+
+    def __init__(self, acerto_id):
+        self.acerto_id = acerto_id
+        super().__init__('Já existe uma negociação para esta dívida.')
 
 
 @transaction.atomic
@@ -285,6 +293,14 @@ def propor_acerto(*, de, para_id, parcela_ids=None):
     if not _tem_mutua_itens(selecionadas, de):
         raise ValueError('Selecione dívidas nos dois sentidos para compensar.')
 
+    # Já existe proposta da outra pessoa para você? Não crie uma concorrente —
+    # sinaliza para o app te levar a revisar (aceitar/recusar) a existente.
+    reversa = Acerto.objects.filter(
+        de_id=para_id, para=de, status=Acerto.STATUS_PENDING,
+    ).first()
+    if reversa is not None:
+        raise NegociacaoExistente(reversa.id)
+
     existente = Acerto.objects.filter(
         de=de, para_id=para_id, status=Acerto.STATUS_PENDING,
     ).first()
@@ -296,9 +312,10 @@ def propor_acerto(*, de, para_id, parcela_ids=None):
 @transaction.atomic
 def confirmar_acerto(*, acerto, quem):
     """
-    A outra parte confirma. Compensa, por grupo, apenas as parcelas selecionadas
-    na proposta que ainda estejam pendentes: quita-as (marca como pagas) e cria
-    uma única dívida líquida com o saldo remanescente.
+    A outra parte confirma. Compensa, por grupo, as parcelas selecionadas ainda
+    pendentes: abate o valor comum dos dois sentidos marcando essas parcelas como
+    pagas por compensação (dividindo a parcela de fronteira quando necessário). O
+    resíduo permanece pendente na própria dívida — não cria dívida nova.
     """
     if quem.pk != acerto.para_id:
         raise PermissionError('Apenas quem recebeu a proposta pode confirmar.')
@@ -310,8 +327,8 @@ def confirmar_acerto(*, acerto, quem):
 
     # Trava e relê as parcelas selecionadas ainda pendentes. Serializa confirmações
     # concorrentes: uma proposta cruzada confirmada ao mesmo tempo espera esta trava
-    # e, ao seguir, encontra as parcelas já quitadas (vira no-op), evitando criar a
-    # dívida líquida em duplicidade.
+    # e, ao seguir, encontra as parcelas já quitadas (vira no-op), evitando abater
+    # em duplicidade.
     sel_ids = list(acerto.parcelas.values_list('pk', flat=True))
     parcelas = list(
         Installment.objects.select_for_update(of=('self',))
@@ -325,21 +342,15 @@ def confirmar_acerto(*, acerto, quem):
         b = porg.setdefault(i.debt.group_id, {'recebo': [], 'devo': []})
         b['recebo' if i.debt.paid_by_id == de.pk else 'devo'].append(i)
 
-    for grupo_id, b in porg.items():
+    for b in porg.values():
         recebo = sum(i.amount_cents for i in b['recebo'])
         devo = sum(i.amount_cents for i in b['devo'])
         if recebo <= 0 or devo <= 0:
             continue  # sem mutualidade na seleção deste grupo — não compensa
 
-        ids = [i.pk for i in b['recebo'] + b['devo']]
-        Installment.objects.filter(pk__in=ids).update(
-            status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now,
-        )
-
-        liquido = recebo - devo  # >0: para deve a de; <0: de deve a para
-        if liquido != 0:
-            credor, devedor = (de, para) if liquido > 0 else (para, de)
-            _criar_divida_liquida(grupo_id, credor, devedor, abs(liquido), criado_por=de)
+        compensado = min(recebo, devo)  # valor abatido em cada sentido
+        _abater(b['recebo'], compensado, acerto, now)
+        _abater(b['devo'], compensado, acerto, now)
 
     acerto.status = Acerto.STATUS_CONFIRMED
     acerto.resolved_at = now
@@ -355,17 +366,35 @@ def confirmar_acerto(*, acerto, quem):
     return acerto
 
 
-def _criar_divida_liquida(grupo_id, credor, devedor, valor_cents, criado_por):
-    """Cria a dívida consolidada do saldo remanescente após a compensação."""
-    divida = Debt.objects.create(
-        group_id=grupo_id, paid_by=credor, created_by=criado_por,
-        description='Acerto de contas', total_amount_cents=valor_cents,
-        split_type=Debt.SPLIT_CUSTOM,
-    )
-    Installment.objects.create(
-        debt=divida, debtor=devedor, amount_cents=valor_cents,
-        status=Installment.STATUS_PENDING,
-    )
+def _abater(parcelas, alvo, acerto, now):
+    """
+    Marca parcelas como pagas por compensação até somar `alvo`, ligando-as ao
+    `acerto` (auditoria). Se a parcela de fronteira ultrapassa o alvo, ela é
+    dividida: a parte abatida vira uma parcela paga e o restante segue pendente
+    na parcela original (mesma dívida) — nunca cria dívida nova.
+    """
+    restante = alvo
+    for inst in parcelas:
+        if restante <= 0:
+            break
+        if inst.amount_cents <= restante:
+            restante -= inst.amount_cents
+            Installment.objects.filter(pk=inst.pk).update(
+                status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now,
+                paid_via=Installment.PAID_VIA_COMPENSATION,
+            )
+            acerto.parcelas_quitadas.add(inst)
+        else:
+            # Divide: original mantém o resto pendente; parte abatida vira paga.
+            resto = inst.amount_cents - restante
+            Installment.objects.filter(pk=inst.pk).update(amount_cents=resto)
+            paga = Installment.objects.create(
+                debt=inst.debt, debtor=inst.debtor, amount_cents=restante,
+                status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now,
+                paid_via=Installment.PAID_VIA_COMPENSATION,
+            )
+            acerto.parcelas_quitadas.add(paga)
+            restante = 0
 
 
 @transaction.atomic

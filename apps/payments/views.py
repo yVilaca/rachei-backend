@@ -18,6 +18,7 @@ from .serializers import (
     PagamentoPublicoSerializer,
 )
 from .services import (
+    NegociacaoExistente,
     confirmar_acerto,
     confirmar_pagamento,
     declarar_pagamento,
@@ -380,6 +381,12 @@ class AcertoView(APIView):
         try:
             acerto = propor_acerto(
                 de=request.user, para_id=para_id, parcela_ids=parcela_ids,
+            )
+        except NegociacaoExistente as e:
+            # Já há proposta da outra pessoa para você — mande revisar, não duplique.
+            return Response(
+                {'detail': str(e), 'acerto_id': str(e.acerto_id)},
+                status=status.HTTP_409_CONFLICT,
             )
         except ValueError as e:
             raise ValidationError(str(e))
