@@ -130,6 +130,28 @@ class SettleUpTest(SecurityTestCase):
         r = self.byt.post(_confirmar(prop.data['id']), format='json')
         self.assertEqual(r.status_code, 400)  # já resolvido
 
+    def test_propostas_cruzadas_nao_duplicam_compensacao(self):
+        # Ambos propõem um ao outro; ambos confirmam. Deve sobrar UMA dívida líquida
+        # e a proposta cruzada é resolvida automaticamente (não fica pendente).
+        a = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')
+        b = self.byt.post(ACERTAR, {'para_id': int(self.s.vic_id)}, format='json')
+
+        r1 = self.byt.post(_confirmar(a.data['id']), format='json')
+        self.assertEqual(r1.status_code, 200, r1.content)
+        # a proposta cruzada de byt→vic já foi resolvida junto
+        self.assertEqual(Acerto.objects.get(pk=b.data['id']).status, Acerto.STATUS_CONFIRMED)
+
+        # vic tenta confirmar a proposta (já resolvida) → 400, nada muda
+        r2 = self.vic.post(_confirmar(b.data['id']), format='json')
+        self.assertEqual(r2.status_code, 400)
+
+        liquidas = Debt.objects.filter(description='Acerto de contas')
+        self.assertEqual(liquidas.count(), 1)
+        d = liquidas.first()
+        self.assertEqual(d.total_amount_cents, 1000)
+        self.assertEqual(d.paid_by_id, int(self.s.vic_id))
+        self.assertEqual(d.installments.get().debtor_id, int(self.s.byt_id))
+
     # ── rejeitar ────────────────────────────────────────────────────────────
     def test_rejeitar_nao_altera_parcelas(self):
         prop = self.vic.post(ACERTAR, {'para_id': int(self.s.byt_id)}, format='json')

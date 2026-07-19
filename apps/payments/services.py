@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from apps.debts.models import Debt, Installment
@@ -268,9 +268,22 @@ def confirmar_acerto(*, acerto, quem):
         raise ValueError('Este acerto já foi resolvido.')
 
     de, para = acerto.de, acerto.para
-    pares = _pares_pendentes(de)  # da perspectiva de `de`: [recebo_de_para, devo_a_para]
-    grupos = pares.get(para.pk, {})
     now = timezone.now()
+
+    # Trava as parcelas pendentes entre os dois (nos dois sentidos) antes de somar.
+    # Serializa confirmações concorrentes: uma proposta cruzada confirmada ao mesmo
+    # tempo espera esta trava e, ao seguir, relê o estado já compensado (vira no-op),
+    # evitando criar a dívida líquida em duplicidade.
+    active = _active_group_ids(de)
+    list(
+        Installment.objects.select_for_update(of=('self',))
+        .filter(status=Installment.STATUS_PENDING, debt__group_id__in=active)
+        .filter(Q(debt__paid_by=de, debtor=para) | Q(debt__paid_by=para, debtor=de))
+        .values_list('pk', flat=True)
+    )
+
+    pares = _pares_pendentes(de)  # relido sob a trava: [recebo_de_para, devo_a_para]
+    grupos = pares.get(para.pk, {})
 
     for grupo_id, (recebo, devo) in grupos.items():
         if recebo <= 0 or devo <= 0:
@@ -294,6 +307,14 @@ def confirmar_acerto(*, acerto, quem):
     acerto.status = Acerto.STATUS_CONFIRMED
     acerto.resolved_at = now
     acerto.save(update_fields=['status', 'resolved_at'])
+
+    # A compensação que qualquer outra proposta pendente entre os dois pedia acabou
+    # de acontecer — resolve-as (ex.: a proposta cruzada de `para` para `de`) para
+    # não ficarem penduradas aguardando uma confirmação que já não faz nada.
+    Acerto.objects.filter(status=Acerto.STATUS_PENDING).filter(
+        Q(de=de, para=para) | Q(de=para, para=de)
+    ).exclude(pk=acerto.pk).update(status=Acerto.STATUS_CONFIRMED, resolved_at=now)
+
     return acerto
 
 
