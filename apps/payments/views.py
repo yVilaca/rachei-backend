@@ -11,7 +11,7 @@ from apps.groups.models import Group, GroupMember
 from apps.users.models import AuditLog, NotificacaoLida
 from apps.users.audit import log_event
 from apps.users.throttles import PublicPageRateThrottle
-from .models import ChargeLink, Comprovante
+from .models import Acerto, ChargeLink, Comprovante
 from .serializers import (
     ComprovanteDetailSerializer,
     DeclaracaoPagamentoSerializer,
@@ -20,9 +20,10 @@ from .serializers import (
 from .services import (
     confirmar_acerto,
     confirmar_pagamento,
-    declarar_acerto,
     declarar_pagamento,
     gerar_link_cobranca,
+    propor_acerto,
+    rejeitar_acerto,
     rejeitar_pagamento,
     resumo_acerto,
 )
@@ -362,41 +363,65 @@ class MarcarLidaView(APIView):
 
 class AcertoView(APIView):
     """
-    GET  /api/acertar/  — resumo: o que você deve (por pessoa) + acertos a confirmar.
-    POST /api/acertar/  — declara acerto ({para_id?, grupo_id?}); sem para_id = com todos.
+    GET  /api/acertar/  — resumo: saldo líquido por pessoa (compensável) + propostas
+                          recebidas aguardando sua confirmação.
+    POST /api/acertar/  — propõe uma compensação ({para_id}); a outra parte confirma.
     """
 
     def get(self, request):
         return Response(resumo_acerto(user=request.user))
 
     def post(self, request):
-        para_id = request.data.get('para_id') or None
-        grupo_id = request.data.get('grupo_id') or None
+        para_id = request.data.get('para_id')
+        if not para_id:
+            raise ValidationError({'para_id': 'Campo obrigatório.'})
         try:
-            n = declarar_acerto(devedor=request.user, para_id=para_id, grupo_id=grupo_id)
+            acerto = propor_acerto(de=request.user, para_id=para_id)
         except ValueError as e:
             raise ValidationError(str(e))
         log_event(
             request, AuditLog.SETTLE_DECLARED, user=request.user,
-            detail={'para_id': para_id, 'grupo_id': str(grupo_id) if grupo_id else None, 'parcelas': n},
+            detail={'acerto_id': str(acerto.id), 'para_id': str(para_id)},
         )
-        return Response({'declaradas': n})
+        return Response({'id': str(acerto.id)}, status=status.HTTP_201_CREATED)
+
+
+def _get_acerto_destinatario(request, pk):
+    """Retorna o acerto se o solicitante for o destinatário; 404 caso contrário
+    (não vaza a existência da proposta a terceiros)."""
+    try:
+        return Acerto.objects.get(pk=pk, para=request.user)
+    except Acerto.DoesNotExist:
+        raise NotFound('Acerto não encontrado.')
 
 
 class AcertoConfirmarView(APIView):
-    """POST /api/acertar/confirmar/ — credor confirma acerto ({de_id, grupo_id?})."""
+    """POST /api/acertar/<id>/confirmar/ — quem recebeu confirma (compensa as dívidas)."""
 
-    def post(self, request):
-        de_id = request.data.get('de_id')
-        grupo_id = request.data.get('grupo_id') or None
-        if not de_id:
-            raise ValidationError({'de_id': 'Campo obrigatório.'})
+    def post(self, request, pk):
+        acerto = _get_acerto_destinatario(request, pk)
         try:
-            n = confirmar_acerto(credor=request.user, de_id=de_id, grupo_id=grupo_id)
+            confirmar_acerto(acerto=acerto, quem=request.user)
         except ValueError as e:
             raise ValidationError(str(e))
         log_event(
             request, AuditLog.SETTLE_CONFIRMED, user=request.user,
-            detail={'de_id': de_id, 'grupo_id': str(grupo_id) if grupo_id else None, 'parcelas': n},
+            detail={'acerto_id': str(acerto.id), 'de_id': str(acerto.de_id)},
         )
-        return Response({'confirmadas': n})
+        return Response({'status': 'confirmed'})
+
+
+class AcertoRejeitarView(APIView):
+    """POST /api/acertar/<id>/rejeitar/ — quem recebeu rejeita a proposta."""
+
+    def post(self, request, pk):
+        acerto = _get_acerto_destinatario(request, pk)
+        try:
+            rejeitar_acerto(acerto=acerto, quem=request.user)
+        except ValueError as e:
+            raise ValidationError(str(e))
+        log_event(
+            request, AuditLog.SETTLE_DECLARED, user=request.user,
+            detail={'acerto_id': str(acerto.id), 'de_id': str(acerto.de_id), 'rejected': True},
+        )
+        return Response({'status': 'rejected'})

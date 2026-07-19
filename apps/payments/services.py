@@ -5,9 +5,9 @@ from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
-from apps.debts.models import Installment
+from apps.debts.models import Debt, Installment
 from apps.groups.models import GroupMember
-from .models import ChargeLink, Comprovante
+from .models import Acerto, ChargeLink, Comprovante
 
 
 @transaction.atomic
@@ -101,97 +101,174 @@ def rejeitar_pagamento(*, parcela, rejeitado_por):
     return parcela
 
 
-# ── Acertar contas (settle up par a par, em lote) ────────────────────────────
+# ── Acertar contas (compensação / netting entre duas pessoas) ────────────────
 
-def _minhas_dividas_qs(devedor):
-    """Parcelas pendentes onde `devedor` deve a outro membro (grupo ativo)."""
-    return (
-        Installment.objects
-        .filter(debtor=devedor, status=Installment.STATUS_PENDING)
-        .exclude(debt__paid_by=devedor)
-        .filter(
-            debt__group__members__user=devedor,
-            debt__group__members__status=GroupMember.STATUS_ATIVO,
-        )
+def _active_group_ids(user):
+    return set(
+        GroupMember.objects
+        .filter(user=user, status=GroupMember.STATUS_ATIVO)
+        .values_list('group_id', flat=True)
     )
+
+
+def _pares_pendentes(user):
+    """
+    Constrói, por contraparte, os totais pendentes por grupo nos dois sentidos.
+    Retorna: { outro_id: { grupo_id: [recebo_dele, devo_a_ele] } } (em centavos).
+    """
+    active = _active_group_ids(user)
+    pares = {}
+
+    recv = (
+        Installment.objects
+        .filter(debt__paid_by=user, status=Installment.STATUS_PENDING, debt__group_id__in=active)
+        .exclude(debtor=user)
+        .values('debtor', 'debt__group_id')
+        .annotate(total=Sum('amount_cents'))
+    )
+    for r in recv:
+        pares.setdefault(r['debtor'], {}).setdefault(r['debt__group_id'], [0, 0])[0] += r['total']
+
+    pay = (
+        Installment.objects
+        .filter(debtor=user, status=Installment.STATUS_PENDING, debt__group_id__in=active)
+        .exclude(debt__paid_by=user)
+        .values('debt__paid_by', 'debt__group_id')
+        .annotate(total=Sum('amount_cents'))
+    )
+    for p in pay:
+        pares.setdefault(p['debt__paid_by'], {}).setdefault(p['debt__group_id'], [0, 0])[1] += p['total']
+
+    return pares
 
 
 def resumo_acerto(*, user):
     """
-    O que o `user` deve (agrupado por credor) e os acertos declarados a ele
-    aguardando sua confirmação (agrupado por devedor). Valores em centavos.
+    Por contraparte: saldo líquido (positivo = te devem; negativo = você deve) e
+    se é compensável (há dívida mútua em algum grupo). Mais os acertos que
+    aguardam a confirmação do `user`.
     """
     User = get_user_model()
+    pares = _pares_pendentes(user)
 
-    deve = list(
-        _minhas_dividas_qs(user)
-        .values('debt__paid_by')
-        .annotate(total=Sum('amount_cents'))
+    enviados = set(
+        Acerto.objects.filter(de=user, status=Acerto.STATUS_PENDING).values_list('para_id', flat=True)
     )
-    a_confirmar = list(
-        Installment.objects
-        .filter(debt__paid_by=user, status=Installment.STATUS_AWAITING)
-        .values('debtor')
-        .annotate(total=Sum('amount_cents'))
-    )
+    recebidos = list(Acerto.objects.filter(para=user, status=Acerto.STATUS_PENDING))
 
-    ids = {d['debt__paid_by'] for d in deve} | {c['debtor'] for c in a_confirmar}
+    ids = set(pares) | {a.de_id for a in recebidos}
     nomes = {u.pk: (u.get_full_name() or u.username) for u in User.objects.filter(pk__in=ids)}
 
-    return {
-        'voce_deve': [
-            {'pessoa': {'id': d['debt__paid_by'], 'name': nomes.get(d['debt__paid_by'])},
-             'valor_cents': d['total']}
-            for d in sorted(deve, key=lambda x: -x['total'])
-        ],
-        'a_confirmar': [
-            {'pessoa': {'id': c['debtor'], 'name': nomes.get(c['debtor'])},
-             'valor_cents': c['total']}
-            for c in sorted(a_confirmar, key=lambda x: -x['total'])
-        ],
-    }
+    pessoas = []
+    for cp_id, grupos in pares.items():
+        saldo = sum(a - b for a, b in grupos.values())
+        compensavel = any(a > 0 and b > 0 for a, b in grupos.values())
+        if saldo == 0 and not compensavel:
+            continue
+        pessoas.append({
+            'pessoa': {'id': cp_id, 'name': nomes.get(cp_id)},
+            'saldo_cents': saldo,
+            'compensavel': compensavel,
+            'acerto_enviado': cp_id in enviados,
+        })
+    pessoas.sort(key=lambda p: p['saldo_cents'])  # quem você mais deve primeiro
+
+    def _saldo_com(outro_id):
+        grupos = pares.get(outro_id, {})
+        return sum(a - b for a, b in grupos.values())
+
+    a_confirmar = [
+        {'id': str(a.id), 'de': {'id': a.de_id, 'name': nomes.get(a.de_id)},
+         'saldo_cents': _saldo_com(a.de_id)}
+        for a in recebidos
+    ]
+
+    return {'pessoas': pessoas, 'a_confirmar': a_confirmar}
+
+
+def _tem_mutua(de, para_id):
+    """Há dívida mútua (nos dois sentidos) entre `de` e `para_id` em algum grupo?"""
+    grupos = _pares_pendentes(de).get(para_id, {})
+    return any(a > 0 and b > 0 for a, b in grupos.values())
 
 
 @transaction.atomic
-def declarar_acerto(*, devedor, para_id=None, grupo_id=None):
-    """
-    Declara pagas (awaiting_confirmation) as parcelas pendentes do `devedor`.
-    Sem `para_id` = com todos que ele deve; com `para_id` = só com aquela pessoa.
-    `grupo_id` limita a um grupo. Só mexe nas parcelas do próprio devedor.
-    """
-    qs = _minhas_dividas_qs(devedor)
-    if para_id:
-        qs = qs.filter(debt__paid_by_id=para_id)
-    if grupo_id:
-        qs = qs.filter(debt__group_id=grupo_id)
+def propor_acerto(*, de, para_id):
+    """Cria (ou reutiliza) uma proposta de compensação pendente de `de` para `para_id`."""
+    if str(de.pk) == str(para_id):
+        raise ValueError('Não é possível acertar consigo mesmo.')
+    if not _tem_mutua(de, para_id):
+        raise ValueError('Não há dívidas mútuas para compensar com esta pessoa.')
 
-    ids = list(qs.values_list('id', flat=True))
-    if not ids:
-        raise ValueError('Nada a acertar.')
-
-    Installment.objects.filter(id__in=ids).update(
-        status=Installment.STATUS_AWAITING, paid_at=timezone.now(),
-    )
-    return len(ids)
+    existente = Acerto.objects.filter(
+        de=de, para_id=para_id, status=Acerto.STATUS_PENDING,
+    ).first()
+    if existente:
+        return existente
+    return Acerto.objects.create(de=de, para_id=para_id)
 
 
 @transaction.atomic
-def confirmar_acerto(*, credor, de_id, grupo_id=None):
+def confirmar_acerto(*, acerto, quem):
     """
-    Credor confirma o acerto declarado por `de_id`: marca como pagas todas as
-    parcelas aguardando confirmação em que ele é o credor e `de_id` o devedor.
+    A outra parte confirma. Compensa as dívidas mútuas por grupo: quita as
+    parcelas dos dois sentidos e cria uma única dívida líquida com o saldo.
     """
-    qs = Installment.objects.filter(
-        debt__paid_by=credor, debtor_id=de_id, status=Installment.STATUS_AWAITING,
-    )
-    if grupo_id:
-        qs = qs.filter(debt__group_id=grupo_id)
+    if quem.pk != acerto.para_id:
+        raise PermissionError('Apenas quem recebeu a proposta pode confirmar.')
+    if acerto.status != Acerto.STATUS_PENDING:
+        raise ValueError('Este acerto já foi resolvido.')
 
-    ids = list(qs.values_list('id', flat=True))
-    if not ids:
-        raise ValueError('Nenhum acerto aguardando sua confirmação desta pessoa.')
+    de, para = acerto.de, acerto.para
+    pares = _pares_pendentes(de)  # da perspectiva de `de`: [recebo_de_para, devo_a_para]
+    grupos = pares.get(para.pk, {})
+    now = timezone.now()
 
-    Installment.objects.filter(id__in=ids).update(
-        status=Installment.STATUS_PAID, confirmed_at=timezone.now(),
+    for grupo_id, (recebo, devo) in grupos.items():
+        if recebo <= 0 or devo <= 0:
+            continue  # sem mutualidade neste grupo — não compensa
+
+        # Quita (por compensação) as parcelas pendentes dos dois sentidos no grupo
+        Installment.objects.filter(
+            debt__group_id=grupo_id, status=Installment.STATUS_PENDING,
+            debt__paid_by=de, debtor=para,
+        ).update(status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now)
+        Installment.objects.filter(
+            debt__group_id=grupo_id, status=Installment.STATUS_PENDING,
+            debt__paid_by=para, debtor=de,
+        ).update(status=Installment.STATUS_PAID, paid_at=now, confirmed_at=now)
+
+        liquido = recebo - devo  # >0: para deve a de; <0: de deve a para
+        if liquido != 0:
+            credor, devedor = (de, para) if liquido > 0 else (para, de)
+            _criar_divida_liquida(grupo_id, credor, devedor, abs(liquido), criado_por=de)
+
+    acerto.status = Acerto.STATUS_CONFIRMED
+    acerto.resolved_at = now
+    acerto.save(update_fields=['status', 'resolved_at'])
+    return acerto
+
+
+def _criar_divida_liquida(grupo_id, credor, devedor, valor_cents, criado_por):
+    """Cria a dívida consolidada do saldo remanescente após a compensação."""
+    divida = Debt.objects.create(
+        group_id=grupo_id, paid_by=credor, created_by=criado_por,
+        description='Acerto de contas', total_amount_cents=valor_cents,
+        split_type=Debt.SPLIT_CUSTOM,
     )
-    return len(ids)
+    Installment.objects.create(
+        debt=divida, debtor=devedor, amount_cents=valor_cents,
+        status=Installment.STATUS_PENDING,
+    )
+
+
+@transaction.atomic
+def rejeitar_acerto(*, acerto, quem):
+    if quem.pk != acerto.para_id:
+        raise PermissionError('Apenas quem recebeu a proposta pode rejeitar.')
+    if acerto.status != Acerto.STATUS_PENDING:
+        raise ValueError('Este acerto já foi resolvido.')
+    acerto.status = Acerto.STATUS_REJECTED
+    acerto.resolved_at = timezone.now()
+    acerto.save(update_fields=['status', 'resolved_at'])
+    return acerto

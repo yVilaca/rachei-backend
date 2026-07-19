@@ -32,6 +32,48 @@ class ChargeLink(models.Model):
         return f'Link de cobrança para parcela {self.installment_id}'
 
 
+class Acerto(models.Model):
+    """
+    Proposta de compensação (netting) entre duas pessoas. `de` propõe; `para`
+    confirma. Ao confirmar, as dívidas pendentes entre os dois (nos dois sentidos)
+    são compensadas e sobra apenas a dívida líquida.
+    """
+    STATUS_PENDING = 'pending'
+    STATUS_CONFIRMED = 'confirmed'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Aguardando confirmação'),
+        (STATUS_CONFIRMED, 'Confirmado'),
+        (STATUS_REJECTED, 'Rejeitado'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, db_column='act_id')
+    de = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='acertos_propostos', db_column='act_de_id',
+    )
+    para = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='acertos_recebidos', db_column='act_para_id',
+    )
+    status = models.CharField(
+        max_length=12, choices=STATUS_CHOICES, default=STATUS_PENDING,
+        db_index=True, db_column='act_status',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_column='act_criado_em')
+    resolved_at = models.DateTimeField(null=True, blank=True, db_column='act_resolvido_em')
+
+    class Meta:
+        db_table = 'acertos'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['para', 'status'], name='acerto_para_status_idx'),
+        ]
+
+    def __str__(self):
+        return f'Acerto {self.de_id}→{self.para_id} ({self.status})'
+
+
 class Comprovante(models.Model):
     id = models.UUIDField(
         primary_key=True, default=uuid.uuid4, editable=False,
