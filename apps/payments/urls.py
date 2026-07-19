@@ -1,6 +1,8 @@
 from django.urls import path
 
 from .views import (
+    AcertoConfirmarView,
+    AcertoView,
     AtividadeListView,
     ComprovanteCreateView,
     ConfirmarPagamentoView,
@@ -15,6 +17,8 @@ app_name = 'payments'
 
 urlpatterns = [
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
+    path('acertar/confirmar/', AcertoConfirmarView.as_view(), name='acerto-confirmar'),
+    path('acertar/', AcertoView.as_view(), name='acerto'),
     path('parcelas/<uuid:pk>/comprovante/', ComprovanteCreateView.as_view(), name='comprovante-create'),
     path('parcelas/<uuid:pk>/confirmar/', ConfirmarPagamentoView.as_view(), name='confirmar-pagamento'),
     path('parcelas/<uuid:pk>/rejeitar/', RejeitarPagamentoView.as_view(), name='rejeitar-pagamento'),

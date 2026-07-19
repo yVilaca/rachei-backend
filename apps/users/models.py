@@ -307,6 +307,8 @@ class AuditLog(models.Model):
     TOKEN_REFRESH = 'token_refresh'
     DEBT_UPDATED = 'debt_updated'
     DEBT_DELETED = 'debt_deleted'
+    SETTLE_DECLARED = 'settle_declared'
+    SETTLE_CONFIRMED = 'settle_confirmed'
 
     EVENT_CHOICES = [
         (LOGIN_OK, 'Login bem-sucedido'),
@@ -320,6 +322,8 @@ class AuditLog(models.Model):
         (TOKEN_REFRESH, 'Token atualizado'),
         (DEBT_UPDATED, 'Dívida editada'),
         (DEBT_DELETED, 'Dívida excluída'),
+        (SETTLE_DECLARED, 'Acerto declarado'),
+        (SETTLE_CONFIRMED, 'Acerto confirmado'),
     ]
 
     user = models.ForeignKey(

@@ -8,7 +8,8 @@ from rest_framework.views import APIView
 
 from apps.debts.models import Debt, Installment
 from apps.groups.models import Group, GroupMember
-from apps.users.models import NotificacaoLida
+from apps.users.models import AuditLog, NotificacaoLida
+from apps.users.audit import log_event
 from apps.users.throttles import PublicPageRateThrottle
 from .models import ChargeLink, Comprovante
 from .serializers import (
@@ -16,7 +17,15 @@ from .serializers import (
     DeclaracaoPagamentoSerializer,
     PagamentoPublicoSerializer,
 )
-from .services import confirmar_pagamento, declarar_pagamento, gerar_link_cobranca, rejeitar_pagamento
+from .services import (
+    confirmar_acerto,
+    confirmar_pagamento,
+    declarar_acerto,
+    declarar_pagamento,
+    gerar_link_cobranca,
+    rejeitar_pagamento,
+    resumo_acerto,
+)
 
 
 class DashboardView(APIView):
@@ -349,3 +358,45 @@ class MarcarLidaView(APIView):
             ignore_conflicts=True,
         )
         return Response({'marcados': len(validos)})
+
+
+class AcertoView(APIView):
+    """
+    GET  /api/acertar/  — resumo: o que você deve (por pessoa) + acertos a confirmar.
+    POST /api/acertar/  — declara acerto ({para_id?, grupo_id?}); sem para_id = com todos.
+    """
+
+    def get(self, request):
+        return Response(resumo_acerto(user=request.user))
+
+    def post(self, request):
+        para_id = request.data.get('para_id') or None
+        grupo_id = request.data.get('grupo_id') or None
+        try:
+            n = declarar_acerto(devedor=request.user, para_id=para_id, grupo_id=grupo_id)
+        except ValueError as e:
+            raise ValidationError(str(e))
+        log_event(
+            request, AuditLog.SETTLE_DECLARED, user=request.user,
+            detail={'para_id': para_id, 'grupo_id': str(grupo_id) if grupo_id else None, 'parcelas': n},
+        )
+        return Response({'declaradas': n})
+
+
+class AcertoConfirmarView(APIView):
+    """POST /api/acertar/confirmar/ — credor confirma acerto ({de_id, grupo_id?})."""
+
+    def post(self, request):
+        de_id = request.data.get('de_id')
+        grupo_id = request.data.get('grupo_id') or None
+        if not de_id:
+            raise ValidationError({'de_id': 'Campo obrigatório.'})
+        try:
+            n = confirmar_acerto(credor=request.user, de_id=de_id, grupo_id=grupo_id)
+        except ValueError as e:
+            raise ValidationError(str(e))
+        log_event(
+            request, AuditLog.SETTLE_CONFIRMED, user=request.user,
+            detail={'de_id': de_id, 'grupo_id': str(grupo_id) if grupo_id else None, 'parcelas': n},
+        )
+        return Response({'confirmadas': n})
