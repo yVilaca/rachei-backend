@@ -26,7 +26,7 @@ class ParcelaListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Installment
         fields = (
-            'id', 'debtor', 'amount_cents', 'status',
+            'id', 'debtor', 'amount_cents', 'status', 'paid_via',
             'paid_at', 'confirmed_at', 'comprovante', 'charge_link_token',
         )
 
