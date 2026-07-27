@@ -17,8 +17,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView as BaseTokenObtainPairView
 
 from .models import AuditLog, PasswordResetCode, SmsVerification, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
@@ -62,6 +63,18 @@ def _clear_refresh_cookie(response) -> None:
 def _log(request, event: str, user=None, detail: dict | None = None) -> None:
     """Auditoria de eventos de auth — delega ao helper compartilhado."""
     log_event(request, event, user=user, detail=detail)
+
+
+def _user_from_access_token(token_str):
+    """Resolve o usuário a partir do access token — usado em login/refresh, onde
+    request.user ainda é anônimo. Retorna None se o token for inválido."""
+    if not token_str:
+        return None
+    try:
+        uid = AccessToken(token_str)[api_settings.USER_ID_CLAIM]
+    except (TokenError, InvalidToken, KeyError):
+        return None
+    return User.objects.filter(pk=uid).first()
 
 
 def _send_verification_code(user) -> None:
@@ -127,7 +140,7 @@ class CustomTokenObtainPairView(BaseTokenObtainPairView):
         if 'refresh' in response.data:
             # Login completo — sem 2FA ou trusted device aceito
             _set_refresh_cookie(response, response.data.pop('refresh'))
-            _log(request, AuditLog.LOGIN_OK)
+            _log(request, AuditLog.LOGIN_OK, user=_user_from_access_token(response.data.get('access')))
         # 2FA pendente: não loga LOGIN_OK — TOTP_OK será registrado após o challenge
         return response
 
@@ -230,7 +243,7 @@ class CookieTokenRefreshView(APIView):
         response = Response({'access': data['access']})
         if 'refresh' in data:
             _set_refresh_cookie(response, data['refresh'])
-        _log(request, AuditLog.TOKEN_REFRESH)
+        _log(request, AuditLog.TOKEN_REFRESH, user=_user_from_access_token(data['access']))
         return response
 
 

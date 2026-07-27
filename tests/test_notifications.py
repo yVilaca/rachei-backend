@@ -27,10 +27,14 @@ def _wa():
 class NotifBaseTest(SecurityTestCase):
     def setUp(self):
         super().setUp()
-        mail.outbox.clear()
-        whatsapp.whatsapp_outbox.clear()
+        self._reset_outboxes()
         self.addCleanup(mail.outbox.clear)
         self.addCleanup(whatsapp.whatsapp_outbox.clear)
+
+    def _reset_outboxes(self):
+        """Zera as caixas — cadastro/cenário enviam código de verificação por WhatsApp."""
+        mail.outbox.clear()
+        whatsapp.whatsapp_outbox.clear()
 
 
 class DispatchTest(NotifBaseTest):
@@ -43,6 +47,7 @@ class DispatchTest(NotifBaseTest):
         u.notif_confirmacoes = flags.get('notif_confirmacoes', True)
         u.notif_lembretes = flags.get('notif_lembretes', True)
         u.save()
+        self._reset_outboxes()  # descarta o WhatsApp de verificação do cadastro
         return u
 
     def test_envia_email_e_whatsapp(self):
@@ -85,6 +90,7 @@ class EventosTest(NotifBaseTest):
         self.s = self.build_scenario()
         from django.contrib.auth import get_user_model
         self.User = get_user_model()
+        self._reset_outboxes()
 
     def _u(self, uid):
         return self.User.objects.get(pk=uid)
@@ -121,6 +127,7 @@ class TriggerIntegracaoTest(NotifBaseTest):
     def setUp(self):
         super().setUp()
         self.s = self.build_scenario()
+        self._reset_outboxes()
 
     def test_criar_despesa_notifica_devedores(self):
         vic = self.api(self.s.vic_t)
@@ -145,6 +152,7 @@ class LembretesTest(NotifBaseTest):
         Installment.objects.filter(pk=self.s.parcela_mb3).update(status=Installment.STATUS_PAID)
         # a parcela do bystander (deve 5000 à vítima) é a alvo dos lembretes
         self.parcela = Installment.objects.get(pk=self.s.parcela_byt)
+        self._reset_outboxes()
 
     def _envelhecer(self, dias):
         """Move a data de criação da dívida para `dias` atrás."""
