@@ -65,6 +65,7 @@ def _log(request, event: str, user=None, detail: dict | None = None) -> None:
 
 
 def _send_verification_code(user) -> None:
+    code = None
     try:
         code = SmsVerification.generate(user)
         send_whatsapp(
@@ -75,6 +76,10 @@ def _send_verification_code(user) -> None:
         # Fronteira fire-and-forget: nunca bloqueia o cadastro, mas registra o
         # motivo (backend pode ser qualquer um; log > silêncio para diagnóstico).
         logger.exception('verificacao_codigo_falhou user=%s', user.pk)
+        # Rede de segurança SÓ em dev: se o envio falhar (ex.: limite do trial
+        # Twilio), mostra o código no log para não travar o teste local.
+        if django_settings.DEBUG and code:
+            logger.warning('DEV verificacao user=%s codigo=%s', user.pk, code)
 
 
 def _link_pending_contacts(user) -> list:
