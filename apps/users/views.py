@@ -33,6 +33,8 @@ from .serializers import (
 from .throttles import AuthRateThrottle, LoginRateThrottle, PasswordResetRateThrottle, PhoneCheckRateThrottle
 from .tokens import TwoFAPendingToken
 
+logger = logging.getLogger('apps.users')
+
 # ---------------------------------------------------------------------------
 # Cookie helpers — refresh token HttpOnly
 # ---------------------------------------------------------------------------
@@ -70,7 +72,9 @@ def _send_verification_sms(user) -> None:
             f'Rachei: seu código de verificação é {code}. Válido por {SmsVerification.CODE_TTL_MINUTES} minutos.',
         )
     except Exception:
-        pass  # nunca bloqueia o cadastro
+        # Fronteira fire-and-forget: nunca bloqueia o cadastro, mas registra o
+        # motivo (backend de SMS pode ser qualquer um; log > silêncio para diagnóstico).
+        logger.exception('sms_verificacao_falhou user=%s', user.pk)
 
 
 def _link_pending_contacts(user) -> list:
