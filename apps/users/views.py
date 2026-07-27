@@ -23,7 +23,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView as BaseTokenObtai
 
 from .models import AuditLog, PasswordResetCode, SmsVerification, TrustedDevice, TwoFactorConfig, TOTPLocked, generate_backup_codes
 from .audit import log_event
-from .sms import send_sms
+from apps.groups.whatsapp import send_whatsapp
 from .serializers import (
     CustomTokenObtainPairSerializer,
     RegisterSerializer,
@@ -64,17 +64,17 @@ def _log(request, event: str, user=None, detail: dict | None = None) -> None:
     log_event(request, event, user=user, detail=detail)
 
 
-def _send_verification_sms(user) -> None:
+def _send_verification_code(user) -> None:
     try:
         code = SmsVerification.generate(user)
-        send_sms(
+        send_whatsapp(
             user.phone,
             f'Rachei: seu código de verificação é {code}. Válido por {SmsVerification.CODE_TTL_MINUTES} minutos.',
         )
     except Exception:
         # Fronteira fire-and-forget: nunca bloqueia o cadastro, mas registra o
-        # motivo (backend de SMS pode ser qualquer um; log > silêncio para diagnóstico).
-        logger.exception('sms_verificacao_falhou user=%s', user.pk)
+        # motivo (backend pode ser qualquer um; log > silêncio para diagnóstico).
+        logger.exception('verificacao_codigo_falhou user=%s', user.pk)
 
 
 def _link_pending_contacts(user) -> list:
@@ -137,7 +137,7 @@ class RegisterView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        _send_verification_sms(user)
+        _send_verification_code(user)
         refresh = RefreshToken.for_user(user)
         refresh['plan'] = user.plan
         response = Response({
@@ -183,7 +183,7 @@ class ResendSmsView(APIView):
     def post(self, request):
         if request.user.phone_verified:
             return Response({'detail': 'Telefone já verificado.'}, status=status.HTTP_400_BAD_REQUEST)
-        _send_verification_sms(request.user)
+        _send_verification_code(request.user)
         return Response({'detail': 'Código reenviado.'})
 
 
