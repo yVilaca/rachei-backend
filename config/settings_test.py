@@ -14,3 +14,8 @@ PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 # Silencia logs de app (SMS de console, INFO de migrations) durante a suíte.
 logging.disable(logging.CRITICAL)
+
+# Notificações: síncronas e capturadas em memória para asserção nos testes.
+NOTIFICACOES_SINCRONAS = True
+EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+WHATSAPP_BACKEND = 'apps.groups.whatsapp.LocMemWhatsAppBackend'

@@ -1,0 +1,15 @@
+[Unit]
+Description=Rachei — envio de lembretes de parcelas em aberto
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rachei
+Group=rachei
+WorkingDirectory=/opt/rachei/rachei-backend
+EnvironmentFile=/opt/rachei/rachei-backend/.env
+# Comando idempotente: seguro rodar mais de uma vez (não reenvia no mesmo período).
+ExecStart=/opt/rachei/venv/bin/python manage.py enviar_lembretes
+# Logs vão para o journald (journalctl -u rachei-lembretes) e, via logging JSON,
+# para o Better Stack como o restante da aplicação.

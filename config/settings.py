@@ -202,6 +202,15 @@ TWILIO_WHATSAPP_FROM = os.getenv('TWILIO_WHATSAPP_FROM', '')      # WhatsApp: wh
 # Prod: apps.groups.whatsapp.TwilioWhatsAppBackend
 WHATSAPP_BACKEND = os.getenv('WHATSAPP_BACKEND', 'apps.groups.whatsapp.ConsoleWhatsAppBackend')
 
+# Notificações ativas (e-mail/WhatsApp). Assíncronas por padrão (thread daemon);
+# os testes ligam NOTIFICACOES_SINCRONAS para asserção determinística.
+NOTIFICACOES_SINCRONAS = os.getenv('NOTIFICACOES_SINCRONAS', 'False') == 'True'
+
+# Lembretes de parcela em aberto (comando enviar_lembretes, idempotente):
+# envia após LEMBRETE_APOS_DIAS de atraso e repete a cada LEMBRETE_INTERVALO_DIAS.
+LEMBRETE_APOS_DIAS = int(os.getenv('LEMBRETE_APOS_DIAS', '3'))
+LEMBRETE_INTERVALO_DIAS = int(os.getenv('LEMBRETE_INTERVALO_DIAS', '4'))
+
 # URL base do frontend — usada nos convites WhatsApp
 APP_INVITE_URL = os.getenv('APP_INVITE_URL', 'https://rachei.app/cadastro')
 

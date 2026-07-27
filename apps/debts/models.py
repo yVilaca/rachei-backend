@@ -85,6 +85,8 @@ class Installment(models.Model):
     )
     paid_at = models.DateTimeField(null=True, blank=True, db_column='pcl_pago_em')
     confirmed_at = models.DateTimeField(null=True, blank=True, db_column='pcl_confirmado_em')
+    # Último lembrete de pendência enviado — garante idempotência do comando.
+    ultimo_lembrete_em = models.DateTimeField(null=True, blank=True, db_column='pcl_ultimo_lembrete_em')
 
     class Meta:
         db_table = 'parcelas'

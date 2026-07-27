@@ -2,6 +2,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.groups.models import GroupMember
+from apps.notifications import events as notif
 from .models import Debt, Installment
 
 
@@ -47,6 +48,17 @@ def criar_despesa(*, grupo, paid_by, created_by, description, total_amount_cents
     )
 
     _criar_parcelas(despesa, paid_by.pk, parcelas_data)
+
+    # Notifica cada devedor (exceto o próprio credor, auto-quitado) após o commit.
+    devedores = [p['debtor'] for p in parcelas_data if p['debtor'].pk != paid_by.pk]
+    for devedor in devedores:
+        valor = next(p['amount_cents'] for p in parcelas_data if p['debtor'].pk == devedor.pk)
+        transaction.on_commit(
+            lambda d=devedor, v=valor: notif.incluido_em_divida(
+                devedor=d, credor=paid_by, descricao=description,
+                grupo_nome=grupo.name, valor_cents=v,
+            )
+        )
     return despesa
 
 

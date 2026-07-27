@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.debts.models import Installment
 from apps.groups.models import GroupMember
+from apps.notifications import events as notif
 from .models import Acerto, ChargeLink, Comprovante
 
 
@@ -44,6 +45,11 @@ def declarar_pagamento(*, parcela, enviado_por, file_url=None):
         status=Installment.STATUS_AWAITING,
         paid_at=timezone.now(),
     )
+    credor = parcela.debt.paid_by
+    transaction.on_commit(lambda: notif.pagamento_declarado(
+        credor=credor, devedor=enviado_por,
+        descricao=parcela.debt.description, valor_cents=parcela.amount_cents,
+    ))
     return comprovante
 
 
@@ -65,6 +71,11 @@ def confirmar_pagamento(*, parcela, confirmado_por):
         confirmed_at=timezone.now(),
     )
     parcela.refresh_from_db(fields=['status', 'confirmed_at'])
+    devedor = parcela.debtor
+    transaction.on_commit(lambda: notif.pagamento_confirmado(
+        devedor=devedor, credor=confirmado_por,
+        descricao=parcela.debt.description, valor_cents=parcela.amount_cents,
+    ))
     return parcela
 
 
@@ -82,10 +93,16 @@ def gerar_link_cobranca(*, parcela, solicitado_por):
         raise ValueError('Parcela já está paga.')
 
     ChargeLink.objects.filter(installment=parcela).delete()
-    return ChargeLink.objects.create(
+    link = ChargeLink.objects.create(
         installment=parcela,
         expires_at=timezone.now() + timedelta(days=7),
     )
+    devedor = parcela.debtor
+    transaction.on_commit(lambda: notif.cobranca_enviada(
+        devedor=devedor, credor=solicitado_por,
+        descricao=parcela.debt.description, valor_cents=parcela.amount_cents,
+    ))
+    return link
 
 
 @transaction.atomic
@@ -106,6 +123,11 @@ def rejeitar_pagamento(*, parcela, rejeitado_por):
         paid_at=None,
     )
     parcela.refresh_from_db(fields=['status', 'paid_at'])
+    devedor = parcela.debtor
+    transaction.on_commit(lambda: notif.comprovante_rejeitado(
+        devedor=devedor, credor=rejeitado_por,
+        descricao=parcela.debt.description, valor_cents=parcela.amount_cents,
+    ))
     return parcela
 
 
@@ -306,6 +328,8 @@ def propor_acerto(*, de, para_id, parcela_ids=None):
     ).first()
     acerto = existente or Acerto.objects.create(de=de, para_id=para_id)
     acerto.parcelas.set(selecionadas)  # substitui a seleção
+    if existente is None:  # notifica só na proposta nova, não ao reajustar a seleção
+        transaction.on_commit(lambda: notif.compensacao_proposta(destinatario=para, proponente=de))
     return acerto
 
 
@@ -363,6 +387,7 @@ def confirmar_acerto(*, acerto, quem):
         Q(de=de, para=para) | Q(de=para, para=de)
     ).exclude(pk=acerto.pk).update(status=Acerto.STATUS_CONFIRMED, resolved_at=now)
 
+    transaction.on_commit(lambda: notif.compensacao_confirmada(proponente=de, confirmador=para))
     return acerto
 
 

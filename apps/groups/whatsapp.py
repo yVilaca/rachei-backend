@@ -72,6 +72,17 @@ class ConsoleWhatsAppBackend:
         )
 
 
+# Caixa de saída em memória para testes (WHATSAPP_BACKEND aponta para cá).
+whatsapp_outbox: list[dict] = []
+
+
+class LocMemWhatsAppBackend:
+    """Usado em testes — acumula as mensagens em `whatsapp_outbox`."""
+
+    def send(self, to: str, body: str) -> None:
+        whatsapp_outbox.append({'to': to, 'body': body})
+
+
 class TwilioWhatsAppBackend:
     """Envia via Twilio WhatsApp API."""
 
@@ -130,6 +141,15 @@ def _send(phone: str, name: str, inviter_name: str, group_name: str) -> None:
 # ---------------------------------------------------------------------------
 # API pública
 # ---------------------------------------------------------------------------
+
+
+def send_whatsapp(phone: str, body: str) -> None:
+    """Envia uma mensagem WhatsApp SINCRONAMENTE (sem thread).
+
+    Reusa o backend configurado e a normalização de número. Propaga exceção ao
+    chamador — quem orquestra (ex.: serviço de notificações) decide o tratamento.
+    """
+    _get_backend().send(_normalize_phone_for_whatsapp(phone), body)
 
 
 def dispatch_group_invite(

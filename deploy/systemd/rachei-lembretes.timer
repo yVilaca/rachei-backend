@@ -1,0 +1,13 @@
+[Unit]
+Description=Rachei — agenda diária dos lembretes de parcelas
+
+[Timer]
+# Todo dia às 10:00 (horário do servidor). Ajuste OnCalendar conforme o público.
+OnCalendar=*-*-* 10:00:00
+# Se o servidor estava desligado na hora marcada, roda assim que voltar.
+Persistent=true
+# Espalha em até 5 min para não bater exatamente no mesmo segundo em toda máquina.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
