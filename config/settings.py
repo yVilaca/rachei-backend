@@ -73,6 +73,10 @@ DATABASES = {
         'HOST': os.getenv('DB_HOST', 'localhost'),
         'PORT': os.getenv('DB_PORT', '5432'),
         'CONN_MAX_AGE': int(os.getenv('CONN_MAX_AGE', '0')),
+        # Negocia UTF-8 já no startup: sem isso, o libpq pode devolver mensagens
+        # no code page do SO (ex.: cp1252 no Windows pt-BR) e o psycopg2 quebra
+        # ao decodificá-las como UTF-8 na conexão.
+        'OPTIONS': {'client_encoding': 'UTF8'},
     }
 }
 

@@ -18,6 +18,10 @@ urlpatterns = [
     path('api/', include('apps.payments.urls')),
 ]
 
+# Rotas de suporte a E2E — SOMENTE sob settings_e2e (E2E_MODE). Nunca em produção.
+if getattr(settings, 'E2E_MODE', False):
+    urlpatterns += [path('api/', include('apps.e2e.urls'))]
+
 # Rota de teste de observabilidade — SOMENTE em DEBUG (nunca em produção).
 # Levanta uma exceção real: exercita Sentry (stack trace) + Better Stack
 # (log ERROR de django.request com request_id).
