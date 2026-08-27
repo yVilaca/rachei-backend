@@ -8,8 +8,10 @@ para os fluxos P0. É chamado pelo comando `seed_e2e` e pelo endpoint de reset
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
+from apps.debts.models import Installment
 from apps.debts.services import criar_despesa
 from apps.groups.models import Group, GroupMember
+from apps.payments.services import gerar_link_cobranca
 
 # Senha forte (passa nos validators) usada por todas as contas de E2E.
 PASSWORD = 'Zx9kLmnQ7er'
@@ -54,6 +56,10 @@ def reset_and_seed():
         parcelas_data=[{'debtor': alice, 'amount_cents': 4000}],
     )
 
+    # Link de cobrança da parcela do bob no Mercado (para o E2E da página pública).
+    parcela_bob = Installment.objects.get(debt=mercado, debtor=bob)
+    link = gerar_link_cobranca(parcela=parcela_bob, solicitado_por=alice)
+
     return {
         'password': PASSWORD,
         'alice': {'id': alice.pk, 'email': alice.email, 'name': alice.get_full_name()},
@@ -61,4 +67,5 @@ def reset_and_seed():
         'group': {'id': str(grupo.id), 'name': grupo.name},
         'debt_mercado': {'id': str(mercado.id)},
         'debt_uber': {'id': str(uber.id)},
+        'charge_token': str(link.token),
     }
