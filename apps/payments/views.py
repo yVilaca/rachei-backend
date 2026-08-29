@@ -229,10 +229,12 @@ class PagamentoPublicoView(generics.RetrieveAPIView):
     lookup_field = 'token'
 
     def get_queryset(self):
+        # Link expirado não resolve (404, sem vazar existência) — o expires_at
+        # (7 dias) deixa de valer silenciosamente se não for filtrado aqui.
         return ChargeLink.objects.select_related(
             'installment__debtor',
             'installment__debt__paid_by',
-        )
+        ).filter(expires_at__gt=timezone.now())
 
     def retrieve(self, request, *args, **kwargs):
         link = self.get_object()
