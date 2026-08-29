@@ -24,6 +24,10 @@ DATABASES['default']['CONN_MAX_AGE'] = 60  # noqa: F405
 DEBUG = True
 E2E_MODE = True  # habilita o endpoint de reset/seed (apps.e2e)
 
+# Chave fixa e longa (>=32 bytes) só para E2E: isola de qualquer .env e evita o
+# InsecureKeyLengthWarning do PyJWT ao assinar os tokens. Não é segredo real.
+SECRET_KEY = 'e2e-insecure-fixed-key-for-tests-only-0123456789abcdef'
+
 # App de suporte a E2E (seed/reset) — só existe neste settings.
 INSTALLED_APPS = [*INSTALLED_APPS, 'apps.e2e']
 
