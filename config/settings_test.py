@@ -12,6 +12,10 @@ from .settings import *  # noqa: F401,F403
 # Hash rápido só para testes (padrão de mercado). Login/validação seguem corretos.
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
+# Chave fixa e longa (>=32 bytes) para a suíte: evita o InsecureKeyLengthWarning
+# do PyJWT ao assinar tokens nos testes de auth. Não é segredo real.
+SECRET_KEY = 'test-insecure-fixed-key-for-tests-only-0123456789abcdef'
+
 # Silencia logs de app (SMS de console, INFO de migrations) durante a suíte.
 logging.disable(logging.CRITICAL)
 
