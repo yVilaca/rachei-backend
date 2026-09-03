@@ -82,7 +82,8 @@ DATABASES = {
         'PASSWORD': os.getenv('DB_PASSWORD', ''),
         'HOST': os.getenv('DB_HOST', 'localhost'),
         'PORT': os.getenv('DB_PORT', '5432'),
-        'CONN_MAX_AGE': int(os.getenv('CONN_MAX_AGE', '0')),
+        'CONN_MAX_AGE': int(os.getenv('CONN_MAX_AGE', '60')),  # reusa conexões (menos handshakes)
+        'CONN_HEALTH_CHECKS': True,
         # Negocia UTF-8 já no startup: sem isso, o libpq pode devolver mensagens
         # no code page do SO (ex.: cp1252 no Windows pt-BR) e o psycopg2 quebra
         # ao decodificá-las como UTF-8 na conexão.
@@ -247,6 +248,15 @@ TWILIO_WHATSAPP_FROM = os.getenv('TWILIO_WHATSAPP_FROM', '')      # WhatsApp: wh
 # Dev:  apps.groups.whatsapp.ConsoleWhatsAppBackend  (padrão)
 # Prod: apps.groups.whatsapp.TwilioWhatsAppBackend
 WHATSAPP_BACKEND = os.getenv('WHATSAPP_BACKEND', 'apps.groups.whatsapp.ConsoleWhatsAppBackend')
+
+# Em produção o backend Console (imprime OTP/convite no stdout) é inaceitável —
+# códigos 2FA/verificação vazariam para o log. Fail-fast se esquecerem de trocar.
+if not DEBUG:
+    for _var, _backend in (('SMS_BACKEND', SMS_BACKEND), ('WHATSAPP_BACKEND', WHATSAPP_BACKEND)):
+        if 'Console' in _backend:
+            raise ImproperlyConfigured(
+                f'{_var} não pode ser o backend Console em produção (vaza códigos no log).'
+            )
 
 # Notificações ativas (e-mail/WhatsApp). Assíncronas por padrão (thread daemon);
 # os testes ligam NOTIFICACOES_SINCRONAS para asserção determinística.

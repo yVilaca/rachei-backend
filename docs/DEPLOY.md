@@ -52,10 +52,15 @@ Duas opções:
 ## 3. Segredos e variáveis (nunca no git)
 
 - [ ] Criar `/opt/rachei/.env.prod` na VPS com os valores reais:
-  - `SECRET_KEY` (novo, forte), `DEBUG=False`, `ALLOWED_HOSTS=seu-dominio.com`
+  - `SECRET_KEY` (novo, forte — a app **recusa subir** com a chave de exemplo), `DEBUG=False`, `ALLOWED_HOSTS=seu-dominio.com`
   - `CORS_ALLOWED_ORIGINS=https://seu-dominio.com`
   - `DB_ENGINE/DB_NAME/DB_USER/DB_PASSWORD/DB_HOST/DB_PORT`
+  - `REDIS_URL=redis://...` (**obrigatório**: throttle compartilhado entre workers)
   - `TOTP_ENCRYPTION_KEY` (a chave Fernet de produção)
+  - `SECURE_SSL_REDIRECT=True`, `SECURE_HSTS_SECONDS=31536000` (atrás de TLS)
+  - `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend` + `EMAIL_HOST/PORT/USER/PASSWORD`
+  - `SMS_BACKEND=apps.users.sms.TwilioSmsBackend`, `WHATSAPP_BACKEND=apps.groups.whatsapp.TwilioWhatsAppBackend` (**Console é recusado em prod**) + `TWILIO_ACCOUNT_SID/AUTH_TOKEN/FROM/WHATSAPP_FROM`
+  - `MEDIA_ROOT` (volume persistente para os comprovantes)
   - `SENTRY_DSN`, `SENTRY_ENVIRONMENT=production`, `SENTRY_TRACES_SAMPLE_RATE=0.1`
   - `BETTERSTACK_SOURCE_TOKEN`, `BETTERSTACK_HOST`
   - `NUM_PROXIES=1` (atrás do nginx — para o rate limit ler o IP real)
@@ -68,6 +73,8 @@ Duas opções:
 - [ ] Subir **nginx** (ou Caddy) na frente: recebe 443, encaminha para o `web:8000`.
 - [ ] TLS automático via **Let's Encrypt** (Caddy faz sozinho; nginx via certbot).
 - [ ] Servir o **frontend** (build estático) e mandar `/api` e `/health` para o backend.
+- [ ] O proxy **deve** enviar `X-Forwarded-Proto https` (a app já lê via `SECURE_PROXY_SSL_HEADER`; sem isso o `SECURE_SSL_REDIRECT` entra em loop).
+- [ ] Rodar `python manage.py collectstatic --noinput` no deploy e servir `STATIC_ROOT` em `/static/` pelo nginx (admin sem CSS/JS caso contrário). O `/media/` **não** é servido pelo nginx — a app serve os comprovantes autenticados.
 
 ## 5. Ativar o pipeline de deploy
 
