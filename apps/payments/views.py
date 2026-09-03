@@ -1,4 +1,5 @@
-from django.db.models import Count, Q
+from django.contrib.auth import get_user_model
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -48,8 +49,10 @@ class DashboardView(APIView):
             .values('group_id')
         )
 
-        # Parcelas onde sou credor e a outra parte ainda não pagou
-        a_receber_qs = list(
+        # Querysets lazy: totais e saldo são agregados no BANCO (não materializam
+        # todas as parcelas em Python); as listas exibidas são limitadas.
+        DISPLAY_LIMIT = 50
+        a_receber_qs = (
             Installment.objects
             .filter(debt__group_id__in=active_group_ids, debt__paid_by=user)
             .exclude(status=Installment.STATUS_PAID)
@@ -57,9 +60,7 @@ class DashboardView(APIView):
             .select_related('debt__group', 'debtor')
             .order_by('-debt__created_at')
         )
-
-        # Parcelas onde sou devedor e ainda não paguei
-        a_pagar_qs = list(
+        a_pagar_qs = (
             Installment.objects
             .filter(debt__group_id__in=active_group_ids, debtor=user)
             .exclude(status=Installment.STATUS_PAID)
@@ -79,26 +80,35 @@ class DashboardView(APIView):
             .order_by('name')
         )
 
-        # Saldo por pessoa (positivo = me devem, negativo = eu devo)
-        balance: dict = {}
         def _name(u):
             return u.get_full_name() or u.username
 
-        for inst in a_receber_qs:
-            uid = inst.debtor.pk
-            if uid not in balance:
-                balance[uid] = {'user': {'id': uid, 'name': _name(inst.debtor)}, 'balance_cents': 0}
-            balance[uid]['balance_cents'] += inst.amount_cents
+        # Totais agregados no banco (não materializa parcelas).
+        total_a_receber = a_receber_qs.aggregate(s=Sum('amount_cents'))['s'] or 0
+        total_a_pagar = a_pagar_qs.aggregate(s=Sum('amount_cents'))['s'] or 0
 
-        for inst in a_pagar_qs:
-            uid = inst.debt.paid_by.pk
-            if uid not in balance:
-                balance[uid] = {'user': {'id': uid, 'name': _name(inst.debt.paid_by)}, 'balance_cents': 0}
-            balance[uid]['balance_cents'] -= inst.amount_cents
+        # Saldo por pessoa agregado no banco (crédito por devedor − débito por credor),
+        # com os nomes resolvidos numa única query.
+        saldo: dict = {}
+        for row in a_receber_qs.values('debtor').annotate(s=Sum('amount_cents')):
+            saldo[row['debtor']] = saldo.get(row['debtor'], 0) + row['s']
+        for row in a_pagar_qs.values('debt__paid_by').annotate(s=Sum('amount_cents')):
+            uid = row['debt__paid_by']
+            saldo[uid] = saldo.get(uid, 0) - row['s']
+        nomes = {u.pk: _name(u) for u in get_user_model().objects.filter(pk__in=saldo.keys())}
+        saldo_por_pessoa = sorted(
+            ({'user': {'id': uid, 'name': nomes.get(uid)}, 'balance_cents': v}
+             for uid, v in saldo.items()),
+            key=lambda x: x['balance_cents'], reverse=True,
+        )
+
+        # Listas para exibição — limitadas (o dashboard resume, não lista tudo).
+        a_receber_qs = list(a_receber_qs[:DISPLAY_LIMIT])
+        a_pagar_qs = list(a_pagar_qs[:DISPLAY_LIMIT])
 
         return Response({
-            'total_a_receber': sum(i.amount_cents for i in a_receber_qs),
-            'total_a_pagar': sum(i.amount_cents for i in a_pagar_qs),
+            'total_a_receber': total_a_receber,
+            'total_a_pagar': total_a_pagar,
             'a_receber': [
                 {
                     'installment_id': str(i.pk),
@@ -123,9 +133,7 @@ class DashboardView(APIView):
                 }
                 for i in a_pagar_qs
             ],
-            'saldo_por_pessoa': sorted(
-                balance.values(), key=lambda x: x['balance_cents'], reverse=True
-            ),
+            'saldo_por_pessoa': saldo_por_pessoa,
             'grupos': [
                 {
                     'id': str(g.pk),
@@ -251,15 +259,21 @@ class AtividadeListView(APIView):
     Inclui flag 'lido' baseada na tabela notificacoes_lidas.
     """
 
+    # Teto por fonte: o feed mostra atividade RECENTE, não o histórico inteiro.
+    # Sem isto, cada request materializa todas as despesas/parcelas da vida da
+    # conta em memória, ordena e pagina em Python — custo cresce sem limite.
+    FEED_SOURCE_LIMIT = 100
+
     def get(self, request):
         user = request.user
         eventos = []
+        limit = self.FEED_SOURCE_LIMIT
 
         def _name(u):
             return (u.get_full_name() or u.username) if u else None
 
         # ── Despesas criadas pelo usuário ─────────────────────────────────────
-        for d in Debt.objects.filter(created_by=user).select_related('group'):
+        for d in Debt.objects.filter(created_by=user).select_related('group').order_by('-created_at')[:limit]:
             eventos.append({
                 'id': f'ev-created-{d.id}',
                 'tipo': 'debt_created_me',
@@ -278,6 +292,7 @@ class AtividadeListView(APIView):
             .filter(debtor=user)
             .exclude(debt__paid_by=user)  # ignora a parcela-própria do credor (auto-paga)
             .select_related('debt__group', 'debt__paid_by', 'charge_link')
+            .order_by('-debt__created_at')[:limit]
         )
         for p in parcelas_dev:
             base = {
@@ -305,6 +320,7 @@ class AtividadeListView(APIView):
             .exclude(debtor=user)  # ignora a parcela-própria (auto-paga)
             .select_related('debt__group', 'debtor')
             .prefetch_related('comprovantes')
+            .order_by('-debt__created_at')[:limit]
         )
         for p in parcelas_cred:
             base = {
