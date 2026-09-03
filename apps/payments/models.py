@@ -92,7 +92,13 @@ class Comprovante(models.Model):
         'debts.Installment', on_delete=models.CASCADE, related_name='comprovantes',
         db_column='cpv_parcela_id',
     )
-    file_url = models.URLField(db_column='cpv_arquivo_url')
+    # Arquivo enviado (imagem/PDF), armazenado em disco e servido por endpoint
+    # autenticado. `file_url` fica para compatibilidade com registros legados.
+    arquivo = models.FileField(
+        upload_to='comprovantes/%Y/%m/', null=True, blank=True,
+        db_column='cpv_arquivo',
+    )
+    file_url = models.URLField(null=True, blank=True, db_column='cpv_arquivo_url')
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,

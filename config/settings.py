@@ -119,6 +119,15 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # destino do collectstatic (admin em prod)
+
+# Mídia (comprovantes de pagamento). Servida por um endpoint AUTENTICADO
+# (apps.payments), nunca por URL pública — MEDIA_ROOT é só o storage em disco.
+MEDIA_ROOT = os.getenv('MEDIA_ROOT', str(BASE_DIR / 'media'))
+MEDIA_URL = '/media/'
+# Teto de upload de comprovante (bytes) — validado no serializer.
+COMPROVANTE_MAX_BYTES = int(os.getenv('COMPROVANTE_MAX_BYTES', str(5 * 1024 * 1024)))
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Django REST Framework

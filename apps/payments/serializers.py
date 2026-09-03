@@ -1,20 +1,46 @@
+from django.conf import settings
+from django.urls import reverse
 from rest_framework import serializers
 
 from apps.users.serializers import UserListSerializer
 from .models import ChargeLink, Comprovante
 
+# Tipos aceitos de comprovante (imagem ou PDF).
+COMPROVANTE_TIPOS = {'image/jpeg', 'image/png', 'image/webp', 'application/pdf'}
+
 
 class DeclaracaoPagamentoSerializer(serializers.Serializer):
-    """Input para declaração de pagamento — comprovante opcional."""
-    file_url = serializers.URLField(required=False, allow_null=True, allow_blank=True)
+    """Input para declaração de pagamento — comprovante (arquivo) opcional."""
+    arquivo = serializers.FileField(required=False, allow_null=True)
+
+    def validate_arquivo(self, f):
+        if f is None:
+            return f
+        if f.size > settings.COMPROVANTE_MAX_BYTES:
+            raise serializers.ValidationError('Arquivo muito grande (máximo 5 MB).')
+        content_type = getattr(f, 'content_type', '') or ''
+        if content_type not in COMPROVANTE_TIPOS:
+            raise serializers.ValidationError('Envie uma imagem (JPG/PNG/WebP) ou PDF.')
+        return f
+
+
+def _comprovante_url(comprovante):
+    """URL do endpoint autenticado que serve o arquivo (ou o legado file_url)."""
+    if comprovante.arquivo:
+        return reverse('payments:comprovante-arquivo', args=[comprovante.id])
+    return comprovante.file_url
 
 
 class ComprovanteDetailSerializer(serializers.ModelSerializer):
     uploaded_by = UserListSerializer(read_only=True)
+    file_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Comprovante
         fields = ('id', 'file_url', 'uploaded_by', 'uploaded_at')
+
+    def get_file_url(self, obj):
+        return _comprovante_url(obj)
 
 
 class PagamentoPublicoSerializer(serializers.ModelSerializer):

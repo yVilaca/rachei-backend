@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist
+from django.urls import reverse
 from rest_framework import serializers
 
 from apps.users.serializers import UserListSerializer
@@ -35,7 +36,9 @@ class ParcelaListSerializer(serializers.ModelSerializer):
         if not cpv:
             return None
         c = cpv[0]
-        return {'id': str(c.id), 'file_url': c.file_url, 'uploaded_at': c.uploaded_at}
+        # Arquivo servido por endpoint autenticado; file_url é legado.
+        url = reverse('payments:comprovante-arquivo', args=[c.id]) if c.arquivo else c.file_url
+        return {'id': str(c.id), 'file_url': url, 'uploaded_at': c.uploaded_at}
 
     def get_charge_link_token(self, obj):
         try:

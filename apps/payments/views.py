@@ -1,9 +1,11 @@
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Q, Sum
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -165,6 +167,7 @@ def _get_parcela(parcela_id, user):
 
 class ComprovanteCreateView(APIView):
     """POST /api/parcelas/{pk}/comprovante/ — devedor declara pagamento (comprovante opcional)."""
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request, pk):
         parcela = _get_parcela(pk, request.user)
@@ -174,7 +177,7 @@ class ComprovanteCreateView(APIView):
         try:
             comprovante = declarar_pagamento(
                 parcela=parcela,
-                file_url=serializer.validated_data.get('file_url') or None,
+                arquivo=serializer.validated_data.get('arquivo') or None,
                 enviado_por=request.user,
             )
         except (PermissionError, ValueError) as e:
@@ -182,6 +185,31 @@ class ComprovanteCreateView(APIView):
 
         data = ComprovanteDetailSerializer(comprovante).data if comprovante else {}
         return Response(data, status=status.HTTP_201_CREATED)
+
+
+class ComprovanteArquivoView(APIView):
+    """
+    GET /api/comprovantes/{pk}/arquivo/ — serve o arquivo do comprovante, apenas
+    para o credor ou o devedor da parcela. Mídia nunca é exposta por URL pública.
+    """
+
+    def get(self, request, pk):
+        try:
+            comprovante = (
+                Comprovante.objects
+                .select_related('parcela__debt')
+                .get(pk=pk)
+            )
+        except Comprovante.DoesNotExist:
+            raise NotFound('Comprovante não encontrado.')
+
+        parcela = comprovante.parcela
+        if request.user.pk not in (parcela.debtor_id, parcela.debt.paid_by_id):
+            raise NotFound('Comprovante não encontrado.')  # não vaza existência
+        if not comprovante.arquivo:
+            raise NotFound('Comprovante não encontrado.')
+
+        return FileResponse(comprovante.arquivo.open('rb'))
 
 
 class ConfirmarPagamentoView(APIView):

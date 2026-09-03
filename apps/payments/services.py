@@ -20,11 +20,11 @@ class NegociacaoExistente(Exception):
 
 
 @transaction.atomic
-def declarar_pagamento(*, parcela, enviado_por, file_url=None):
+def declarar_pagamento(*, parcela, enviado_por, arquivo=None):
     """
     Devedor declara que pagou — status muda para awaiting_confirmation.
-    Comprovante é opcional: se file_url fornecido, registra; caso contrário,
-    apenas atualiza o status para revisão do credor.
+    Comprovante é opcional: se `arquivo` fornecido, registra o upload; caso
+    contrário, apenas atualiza o status para revisão do credor.
 
     Raises PermissionError se o solicitante não for o devedor.
     Raises ValueError se a parcela já estiver paga.
@@ -35,10 +35,10 @@ def declarar_pagamento(*, parcela, enviado_por, file_url=None):
         raise ValueError('Parcela já está confirmada como paga.')
 
     comprovante = None
-    if file_url:
+    if arquivo is not None:
         comprovante = Comprovante.objects.create(
             parcela=parcela,
-            file_url=file_url,
+            arquivo=arquivo,
             uploaded_by=enviado_por,
         )
     Installment.objects.filter(pk=parcela.pk).update(
