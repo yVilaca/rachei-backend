@@ -11,8 +11,12 @@ tzdata==2026.2
 cryptography==49.0.0
 pyotp==2.10.0
 # Produção usa PostgreSQL
-psycopg2-binary==2.9.10
+psycopg2-binary==2.9.12
 gunicorn==23.0.0
+# Cache/throttle compartilhado entre workers (obrigatório em produção)
+redis==6.4.0
+# SMS/WhatsApp (verificação de telefone, convites, notificações) em produção
+twilio==9.10.0
 # Observabilidade: erros/performance (Sentry) + logs estruturados/centralizados (Better Stack)
 sentry-sdk[django]==2.33.2
 python-json-logger==4.1.0

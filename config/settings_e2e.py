@@ -12,6 +12,10 @@ import os
 # importar settings — load_dotenv não sobrescreve variáveis já presentes.
 os.environ['SENTRY_DSN'] = ''
 os.environ['BETTERSTACK_SOURCE_TOKEN'] = ''
+# DEBUG=True e chave fixa ANTES do import: evita o fail-fast de produção do
+# settings base (SECRET_KEY/REDIS obrigatórios) na CI, que não tem .env.
+os.environ['DEBUG'] = 'True'
+os.environ.setdefault('SECRET_KEY', 'e2e-insecure-fixed-key-for-tests-only-0123456789abcdef')
 
 from .settings import *  # noqa: E402,F401,F403
 from .settings import INSTALLED_APPS, REST_FRAMEWORK  # noqa: E402

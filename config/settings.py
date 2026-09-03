@@ -6,8 +6,18 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me')
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
+from django.core.exceptions import ImproperlyConfigured  # noqa: E402
+
+# Fail-safe por padrão: DEBUG desligado a menos que explicitamente ligado, e a
+# aplicação recusa subir em produção com a SECRET_KEY de exemplo (chave de
+# assinatura JWT previsível). Dev/testes definem DEBUG=True via .env/settings.
+_INSECURE_SECRET = 'django-insecure-change-me'
+SECRET_KEY = os.getenv('SECRET_KEY', _INSECURE_SECRET)
+DEBUG = os.getenv('DEBUG', 'False') == 'True'
+if not DEBUG and SECRET_KEY == _INSECURE_SECRET:
+    raise ImproperlyConfigured(
+        'SECRET_KEY não configurada: defina SECRET_KEY no ambiente antes de rodar com DEBUG=False.'
+    )
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
 # Application definition
@@ -79,6 +89,20 @@ DATABASES = {
         'OPTIONS': {'client_encoding': 'UTF8'},
     }
 }
+
+# Cache — backend do rate-limit (throttle) do DRF. Precisa ser COMPARTILHADO
+# entre workers em produção: LocMem é por-processo, então com gunicorn -w N cada
+# worker teria seu próprio contador e o limite de login (5/min) viraria 5*N,
+# furando o anti-brute-force. Redis via REDIS_URL em prod; LocMem só em dev.
+REDIS_URL = os.getenv('REDIS_URL', '')
+if REDIS_URL:
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': REDIS_URL}}
+elif DEBUG:
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+else:
+    raise ImproperlyConfigured(
+        'REDIS_URL é obrigatória em produção: o throttle precisa de cache compartilhado entre workers.'
+    )
 
 AUTH_USER_MODEL = 'users.User'
 
@@ -170,10 +194,19 @@ SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0'))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
 SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
 
-# Cookies de sessão seguros (não usados com JWT, mas defensivamente boas práticas)
+# Atrás de proxy/TLS-terminator (nginx/Caddy): sem isto o Django não reconhece o
+# X-Forwarded-Proto, request.is_secure() é sempre False e SECURE_SSL_REDIRECT
+# entra em loop infinito de redirect. O proxy DEVE sobrescrever esse header.
+if os.getenv('USE_X_FORWARDED_PROTO', 'True' if not DEBUG else 'False') == 'True':
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Cookies de sessão seguros (não usados com JWT, mas defensivamente boas práticas).
+# Secure fora de dev: admin usa sessão+CSRF por cookie e não podem trafegar em HTTP.
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Strict'
+SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_HTTPONLY = False  # CSRF cookie precisa ser lido pelo JS (se CSRF ativo)
+CSRF_COOKIE_SECURE = not DEBUG
 
 # URL do admin — configurável via env para não ficar em /admin/ padrão
 ADMIN_URL = os.getenv('ADMIN_URL', 'admin/')
