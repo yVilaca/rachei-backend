@@ -25,7 +25,8 @@ class ContatoPendenteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ContatoPendente
-        fields = ('name',)
+        # id é necessário para atribuir dívidas ao contato; telefone nunca é exposto.
+        fields = ('id', 'name')
 
 
 class MembroListSerializer(serializers.ModelSerializer):
