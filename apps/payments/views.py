@@ -59,7 +59,7 @@ class DashboardView(APIView):
             .filter(debt__group_id__in=active_group_ids, debt__paid_by=user)
             .exclude(status=Installment.STATUS_PAID)
             .exclude(debtor=user)
-            .select_related('debt__group', 'debtor')
+            .select_related('debt__group', 'debtor', 'debtor_contato')
             .order_by('-debt__created_at')
         )
         a_pagar_qs = (
@@ -85,6 +85,12 @@ class DashboardView(APIView):
         def _name(u):
             return u.get_full_name() or u.username
 
+        def _debtor(i):
+            if i.debtor_id:
+                return {'id': i.debtor.pk, 'name': _name(i.debtor), 'pending': False}
+            c = i.debtor_contato
+            return {'id': f'p{c.pk}', 'name': c.name, 'pending': True} if c else {'id': None, 'name': '—', 'pending': True}
+
         # Totais agregados no banco (não materializa parcelas).
         total_a_receber = a_receber_qs.aggregate(s=Sum('amount_cents'))['s'] or 0
         total_a_pagar = a_pagar_qs.aggregate(s=Sum('amount_cents'))['s'] or 0
@@ -93,6 +99,8 @@ class DashboardView(APIView):
         # com os nomes resolvidos numa única query.
         saldo: dict = {}
         for row in a_receber_qs.values('debtor').annotate(s=Sum('amount_cents')):
+            if row['debtor'] is None:
+                continue  # pendente: conta no total, mas ainda sem pessoa atribuída
             saldo[row['debtor']] = saldo.get(row['debtor'], 0) + row['s']
         for row in a_pagar_qs.values('debt__paid_by').annotate(s=Sum('amount_cents')):
             uid = row['debt__paid_by']
@@ -119,7 +127,7 @@ class DashboardView(APIView):
                     'group_name': i.debt.group.name,
                     'amount_cents': i.amount_cents,
                     'status': i.status,
-                    'debtor': {'id': i.debtor.pk, 'name': _name(i.debtor)},
+                    'debtor': _debtor(i),
                 }
                 for i in a_receber_qs
             ],

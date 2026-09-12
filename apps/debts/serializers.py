@@ -3,24 +3,40 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.urls import reverse
 from rest_framework import serializers
 
+from apps.groups.models import ContatoPendente
 from apps.users.serializers import UserListSerializer
 from .models import Debt, Installment
 
 User = get_user_model()
 
 
+def debtor_repr(obj):
+    """Devedor da parcela: usuário registrado ou contato pendente (flag `pending`).
+    Para pendente, o `id` é prefixado ('p<contato_id>') e o telefone nunca é exposto."""
+    if obj.debtor_id:
+        u = obj.debtor
+        return {'id': u.pk, 'name': u.get_full_name() or u.username, 'pending': False}
+    c = obj.debtor_contato
+    if c:
+        return {'id': f'p{c.pk}', 'name': c.name, 'pending': True}
+    return None
+
+
 class ParcelaBalanceSerializer(serializers.ModelSerializer):
     """Campos mínimos para listagem — cálculo de saldo e filtro de status."""
-    debtor = UserListSerializer(read_only=True)
+    debtor = serializers.SerializerMethodField()
 
     class Meta:
         model = Installment
         fields = ('id', 'debtor', 'amount_cents', 'status')
 
+    def get_debtor(self, obj):
+        return debtor_repr(obj)
+
 
 class ParcelaListSerializer(serializers.ModelSerializer):
     """Campos completos para detalhe de despesa."""
-    debtor = UserListSerializer(read_only=True)
+    debtor = serializers.SerializerMethodField()
     comprovante = serializers.SerializerMethodField()
     charge_link_token = serializers.SerializerMethodField()
 
@@ -30,6 +46,9 @@ class ParcelaListSerializer(serializers.ModelSerializer):
             'id', 'debtor', 'amount_cents', 'status', 'paid_via',
             'paid_at', 'confirmed_at', 'comprovante', 'charge_link_token',
         )
+
+    def get_debtor(self, obj):
+        return debtor_repr(obj)
 
     def get_comprovante(self, obj):
         cpv = sorted(obj.comprovantes.all(), key=lambda c: c.uploaded_at, reverse=True)
@@ -88,9 +107,19 @@ class DespesaDetailSerializer(serializers.ModelSerializer):
 
 
 class ParcelaInputSerializer(serializers.Serializer):
-    """Entrada de uma parcela ao criar despesa."""
-    debtor_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), source='debtor')
+    """Entrada de uma parcela — devedor registrado OU contato pendente (exatamente um)."""
+    debtor_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(), source='debtor', required=False, allow_null=True)
+    debtor_contato_id = serializers.PrimaryKeyRelatedField(
+        queryset=ContatoPendente.objects.all(), source='debtor_contato', required=False, allow_null=True)
     amount_cents = serializers.IntegerField(min_value=1)
+
+    def validate(self, data):
+        has_user = data.get('debtor') is not None
+        has_contato = data.get('debtor_contato') is not None
+        if has_user == has_contato:
+            raise serializers.ValidationError('Cada parcela precisa de um devedor (usuário ou contato pendente).')
+        return data
 
 
 class DespesaFormSerializer(serializers.Serializer):

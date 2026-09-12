@@ -98,6 +98,7 @@ def _send_verification_code(user) -> None:
 def _link_pending_contacts(user) -> list:
     """Ao verificar o telefone, migra ContatoPendente → GroupMember(pendente_confirmacao)."""
     from apps.groups.models import ContatoPendente, GroupMember
+    from apps.debts.models import Installment
     contatos = list(
         ContatoPendente.objects
         .filter(phone=user.phone)
@@ -115,6 +116,9 @@ def _link_pending_contacts(user) -> list:
                 'name': membership.group.name,
                 'emoji': membership.group.emoji,
             })
+        # Dívidas atribuídas a este contato passam a pertencer ao usuário real.
+        # Só acontece aqui, após a verificação por OTP: o vínculo exige provar o telefone.
+        Installment.objects.filter(debtor_contato=contato).update(debtor=user, debtor_contato=None)
         contato.delete()
     return pending_groups
 

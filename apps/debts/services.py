@@ -26,10 +26,22 @@ def criar_despesa(*, grupo, paid_by, created_by, description, total_amount_cents
     if paid_by.pk not in member_ids:
         raise PermissionError('Você não é membro deste grupo.')
 
-    debtor_ids = {p['debtor'].pk for p in parcelas_data}
-    invalidos = debtor_ids - member_ids
-    if invalidos:
-        raise ValueError('Um ou mais devedores não são membros do grupo.')
+    # Contatos pendentes que são membros DESTE grupo (convidados por telefone).
+    contato_ids = set(
+        GroupMember.objects
+        .filter(group=grupo, contato_pendente__isnull=False)
+        .values_list('contato_pendente_id', flat=True)
+    )
+
+    for p in parcelas_data:
+        if p.get('debtor') is not None:
+            if p['debtor'].pk not in member_ids:
+                raise ValueError('Um ou mais devedores não são membros do grupo.')
+        elif p.get('debtor_contato') is not None:
+            if p['debtor_contato'].pk not in contato_ids:
+                raise ValueError('Contato pendente não pertence a este grupo.')
+        else:
+            raise ValueError('Parcela sem devedor.')
 
     if split_type == Debt.SPLIT_EQUAL:
         n = len(parcelas_data)
@@ -49,12 +61,14 @@ def criar_despesa(*, grupo, paid_by, created_by, description, total_amount_cents
 
     _criar_parcelas(despesa, paid_by.pk, parcelas_data)
 
-    # Notifica cada devedor (exceto o próprio credor, auto-quitado) após o commit.
-    devedores = [p['debtor'] for p in parcelas_data if p['debtor'].pk != paid_by.pk]
-    for devedor in devedores:
-        valor = next(p['amount_cents'] for p in parcelas_data if p['debtor'].pk == devedor.pk)
+    # Notifica cada devedor REGISTRADO (exceto o credor, auto-quitado) após o commit.
+    # Contatos pendentes só serão notificados/vinculados quando se cadastrarem.
+    for p in parcelas_data:
+        devedor = p.get('debtor')
+        if devedor is None or devedor.pk == paid_by.pk:
+            continue
         transaction.on_commit(
-            lambda d=devedor, v=valor: notif.incluido_em_divida(
+            lambda d=devedor, v=p['amount_cents']: notif.incluido_em_divida(
                 devedor=d, credor=paid_by, descricao=description,
                 grupo_nome=grupo.name, valor_cents=v,
             )
@@ -63,19 +77,23 @@ def criar_despesa(*, grupo, paid_by, created_by, description, total_amount_cents
 
 
 def _criar_parcelas(despesa, paid_by_id, parcelas_data):
-    """Cria as parcelas; a do próprio credor já nasce paga (auto-quitada)."""
+    """Cria as parcelas; a do próprio credor já nasce paga (auto-quitada).
+    Devedor é um usuário registrado OU um contato pendente."""
     now = timezone.now()
-    Installment.objects.bulk_create([
-        Installment(
+    parcelas = []
+    for p in parcelas_data:
+        devedor = p.get('debtor')
+        auto = devedor is not None and devedor.pk == paid_by_id
+        parcelas.append(Installment(
             debt=despesa,
-            debtor=p['debtor'],
+            debtor=devedor,
+            debtor_contato=p.get('debtor_contato'),
             amount_cents=p['amount_cents'],
-            status=Installment.STATUS_PAID if p['debtor'].pk == paid_by_id else Installment.STATUS_PENDING,
-            paid_at=now if p['debtor'].pk == paid_by_id else None,
-            confirmed_at=now if p['debtor'].pk == paid_by_id else None,
-        )
-        for p in parcelas_data
-    ])
+            status=Installment.STATUS_PAID if auto else Installment.STATUS_PENDING,
+            paid_at=now if auto else None,
+            confirmed_at=now if auto else None,
+        ))
+    Installment.objects.bulk_create(parcelas)
 
 
 def _alteravel(despesa) -> bool:

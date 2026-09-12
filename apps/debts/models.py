@@ -62,11 +62,22 @@ class Installment(models.Model):
         Debt, on_delete=models.CASCADE, related_name='installments',
         db_column='pcl_despesa_id',
     )
+    # Devedor: um usuário registrado OU um contato pendente (convidado por
+    # telefone, ainda sem conta). Exatamente um dos dois é preenchido. Ao o
+    # contato verificar o telefone (OTP), a parcela migra para o usuário real.
     debtor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
+        null=True, blank=True,
         related_name='installments_owed',
         db_column='pcl_devedor_id',
+    )
+    debtor_contato = models.ForeignKey(
+        'groups.ContatoPendente',
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='parcelas',
+        db_column='pcl_devedor_contato_id',
     )
     amount_cents = models.PositiveIntegerField(db_column='pcl_valor_centavos')
     status = models.CharField(
